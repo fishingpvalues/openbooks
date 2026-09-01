@@ -25,8 +25,10 @@ func init() {
 	serverCmd.Flags().BoolVar(&serverConfig.DisableBrowserDownloads, "no-browser-downloads", false, "The browser won't recieve and download eBook files, but they are still saved to the defined 'dir' path.")
 	serverCmd.Flags().StringVar(&serverConfig.Basepath, "basepath", "/", `Base path where the application is accessible. For example "/openbooks/".`)
 	serverCmd.Flags().BoolVarP(&openBrowser, "browser", "b", false, "Open the browser on server start.")
-	serverCmd.Flags().BoolVar(&serverConfig.Persist, "persist", false, "Persist eBooks in 'dir'. Default is to delete after sending.")
+	serverCmd.Flags().BoolVarP(&serverConfig.Persist, "persist", "P", false, "Persist eBooks in 'dir'. Default is to delete after sending.")
 	serverCmd.Flags().StringVarP(&serverConfig.DownloadDir, "dir", "d", filepath.Join(os.TempDir(), "openbooks"), "The directory where eBooks are saved when persist enabled.")
+	serverCmd.Flags().StringVar(&serverConfig.Token, "token", "", "API token. Every route except the static SPA and /openapi.json requires it (also OPENBOOKS_TOKEN env). Empty = single-user mode, no auth.")
+	serverCmd.Flags().StringVar(&serverConfig.BindIP, "bind", "127.0.0.1", "Interface to listen on. 127.0.0.1 by default; the docker image passes 0.0.0.0.")
 }
 
 var serverCmd = &cobra.Command{
@@ -40,6 +42,8 @@ var serverCmd = &cobra.Command{
 		// Environment variables fill in values the CLI flags left at
 		// their defaults; an explicitly set flag always wins.
 		applyServerEnv(&serverConfig, cmd)
+		// If cli flag isn't set (default value) check for the presence of an
+		// environment variable and use it if found.
 		if serverConfig.Basepath == cmd.Flag("basepath").DefValue {
 			if envPath, present := os.LookupEnv("BASE_PATH"); present {
 				serverConfig.Basepath = envPath
@@ -57,26 +61,38 @@ var serverCmd = &cobra.Command{
 	},
 }
 
-// applyServerEnv maps environment variables onto the server config
-// for the values the CLI flags left at their defaults. A flag that
-// was explicitly set on the command line always wins over the
-// environment.
+// applyServerEnv maps environment variables onto the server config for
+// the values the CLI flags left at their defaults. A flag explicitly
+// set on the command line always wins over the environment.
 //
-//	ENV           FLAG            DESCRIPTION
-//	PORT          --port          listen port (default 5228)
-//	DOWNLOAD_DIR  --dir           where eBooks are saved
-//	PERSIST       --persist       keep eBooks after sending (true/false)
-//	RATE_LIMIT    --rate-limit    seconds between searches (min 10)
-//	USER_AGENT    --useragent     version string reported to IRC
-//	BASE_PATH     --basepath      handled above, listed for completeness
+// The OPENBOOKS_* names are the stack convention (potatostack compose
+// prefixes every service's vars); the short names are accepted too for
+// standalone use.
+//
+//	ENV                    FLAG            DESCRIPTION
+//	OPENBOOKS_PORT / PORT  --port          listen port (default 5228)
+//	OPENBOOKS_DIR / DOWNLOAD_DIR --dir     where eBooks are saved
+//	OPENBOOKS_PERSIST / PERSIST        --persist       keep eBooks after sending (true/false)
+//	OPENBOOKS_RATE_LIMIT / RATE_LIMIT  --rate-limit    seconds between searches (min 10)
+//	OPENBOOKS_USER_AGENT / USER_AGENT  --useragent     version string reported to IRC
 func applyServerEnv(config *server.Config, cmd *cobra.Command) {
-	if v, ok := os.LookupEnv("PORT"); ok && v != "" && !cmd.Flags().Changed("port") {
+	// envValue returns the first non-empty of the given names.
+	envValue := func(names ...string) (string, bool) {
+		for _, n := range names {
+			if v, ok := os.LookupEnv(n); ok && v != "" {
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	if v, ok := envValue("OPENBOOKS_PORT", "PORT"); ok && !cmd.Flags().Changed("port") {
 		config.Port = v
 	}
-	if v, ok := os.LookupEnv("DOWNLOAD_DIR"); ok && v != "" && !cmd.Flags().Changed("dir") {
+	if v, ok := envValue("OPENBOOKS_DIR", "DOWNLOAD_DIR"); ok && !cmd.Flags().Changed("dir") {
 		config.DownloadDir = v
 	}
-	if v, ok := os.LookupEnv("PERSIST"); ok {
+	if v, ok := envValue("OPENBOOKS_PERSIST", "PERSIST"); ok && !cmd.Flags().Changed("persist") {
 		switch strings.ToLower(v) {
 		case "true", "1", "yes":
 			config.Persist = true
@@ -86,14 +102,14 @@ func applyServerEnv(config *server.Config, cmd *cobra.Command) {
 			fmt.Fprintf(os.Stderr, "ignoring invalid PERSIST=%q (want true or false)\n", v)
 		}
 	}
-	if v, ok := os.LookupEnv("RATE_LIMIT"); ok && v != "" && !cmd.Flags().Changed("rate-limit") {
+	if v, ok := envValue("OPENBOOKS_RATE_LIMIT", "RATE_LIMIT"); ok && !cmd.Flags().Changed("rate-limit") {
 		if n, err := strconv.Atoi(v); err == nil {
 			ensureValidRate(n, config)
 		} else {
 			fmt.Fprintf(os.Stderr, "ignoring invalid RATE_LIMIT=%q (want an integer)\n", v)
 		}
 	}
-	if v, ok := os.LookupEnv("USER_AGENT"); ok && v != "" && !cmd.Flags().Changed("useragent") {
+	if v, ok := envValue("OPENBOOKS_USER_AGENT", "USER_AGENT"); ok && !cmd.Flags().Changed("useragent") {
 		config.UserAgent = v
 	}
 }

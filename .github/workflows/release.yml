@@ -18,7 +18,9 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "^1.19.2"
+          # go1.26.6: the v5.0.0 line is built with a standard library that
+          # carries no known reachable advisories (1.26.0 had 16).
+          go-version: "^1.26.6"
       - run: go version
 
       - name: Setup Node.js

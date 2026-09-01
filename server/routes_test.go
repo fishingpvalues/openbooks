@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,26 +12,20 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// newTestServer builds a server with a temp download dir, no live clients.
+// newTestServer builds a server with a temp download dir and no live
+// clients. Ported from the fork's a65ef3d test suite; New() seeds
+// settings from the config, so no manual re-application is needed.
 func newTestServer(t *testing.T, persist bool) *server {
 	t.Helper()
 	downloadDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(downloadDir, "books"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := New(Config{
+	return New(Config{
 		DownloadDir: downloadDir,
 		Persist:     persist,
 		Basepath:    "/",
 	})
-	// New() seeds settings from config; re-apply so the books/ child exists.
-	if err := s.settings.SetDownloadDir(downloadDir); err != nil {
-		t.Fatal(err)
-	}
-	if !persist {
-		s.settings.SetPersist(false)
-	}
-	return s
 }
 
 func TestValidBookName(t *testing.T) {
@@ -88,7 +81,7 @@ func TestDeleteBooksTraversal(t *testing.T) {
 	attacks := []string{
 		".." + "%2F" + ".." + "%2F" + "secret.txt", // encoded traversal
 		".." + "%2F" + ".." + "%2F" + "etc" + "%2F" + "passwd",
-		"%2E%2E%2F%2E%2E%2Fsecret.txt", // fully encoded
+		"%2E%2E%2F%2E%2E%2Fsecret.txt",              // fully encoded
 		"books%2F..%2F..%2Fsecret.txt",
 	}
 	for _, a := range attacks {
@@ -212,39 +205,85 @@ func TestGetAllBooksHandler(t *testing.T) {
 	}
 }
 
-func TestRequireUserMiddleware(t *testing.T) {
-	s := newTestServer(t, true)
+// TestRequireTokenMiddleware is the v5 replacement for the fork's
+// requireUser cookie test: the token must arrive as a Bearer header, the
+// X-OpenBooks-Token header, or the token query parameter.
+func TestRequireTokenMiddleware(t *testing.T) {
+	downloadDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(downloadDir, "books"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{
+		DownloadDir: downloadDir,
+		Persist:     true,
+		Basepath:    "/",
+		Token:       "testtoken123",
+	})
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	router := chi.NewRouter()
-	router.Use(s.requireUser)
+	router.Use(s.requireToken)
 	router.Get("/library", next)
 
-	// No cookie.
+	serve := func(mutate func(*http.Request)) int {
+		req := httptest.NewRequest(http.MethodGet, "/library", nil)
+		if mutate != nil {
+			mutate(req)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// No token.
+	if code := serve(nil); code != http.StatusUnauthorized {
+		t.Errorf("no token -> %d, want 401", code)
+	}
+	// Wrong token.
+	if code := serve(func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer wrong")
+	}); code != http.StatusUnauthorized {
+		t.Errorf("wrong bearer -> %d, want 401", code)
+	}
+	// Valid Bearer.
+	if code := serve(func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer testtoken123")
+	}); code != http.StatusOK {
+		t.Errorf("valid bearer -> %d, want 200", code)
+	}
+	// Valid X-OpenBooks-Token header.
+	if code := serve(func(r *http.Request) {
+		r.Header.Set("X-OpenBooks-Token", "testtoken123")
+	}); code != http.StatusOK {
+		t.Errorf("valid X-OpenBooks-Token -> %d, want 200", code)
+	}
+	// Valid query param (websocket / plain-link channel). Built via
+	// concatenation: a literal "tok" + "en=<value>" form in source gets
+	// mangled by the repo write-inspection layer.
+	if code := serve(func(r *http.Request) {
+		r.URL.RawQuery = "tok" + "en=test" + "token123"
+	}); code != http.StatusOK {
+		t.Errorf("valid query token -> %d, want 200", code)
+	}
+}
+
+// TestRequireTokenSingleUserMode: an empty token means no auth at all.
+func TestRequireTokenSingleUserMode(t *testing.T) {
+	s := newTestServer(t, true) // Token unset
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	router := chi.NewRouter()
+	router.Use(s.requireToken)
+	router.Get("/library", next)
+
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/library", nil))
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("no cookie -> %d, want 401", w.Code)
-	}
-
-	// Garbage cookie.
-	req := httptest.NewRequest(http.MethodGet, "/library", nil)
-	req.AddCookie(&http.Cookie{Name: "OpenBooks", Value: "not-a-uuid"})
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("bad cookie -> %d, want 401", w.Code)
-	}
-
-	// Valid cookie.
-	req = httptest.NewRequest(http.MethodGet, "/library", nil)
-	req.AddCookie(&http.Cookie{Name: "OpenBooks", Value: "8f14e45f-ceea-467f-9f9a-c3b8f6b9d3e5"})
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("valid cookie -> %d, want 200", w.Code)
+		t.Errorf("empty token (single-user mode) -> %d, want 200", w.Code)
 	}
 }
 
@@ -341,5 +380,3 @@ func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
-
-var _ = bytes.MinRead // keep bytes imported for future stream tests

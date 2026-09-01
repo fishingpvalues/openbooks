@@ -76,11 +76,7 @@ export default function BookTable({ books }: BookTableProps) {
         cell: (props) => {
           const online = servers?.includes(props.getValue());
           return (
-            <Text
-              fz={12}
-              fw="normal"
-              color="dark"
-              style={{ marginLeft: 20 }}>
+            <Text fz={12} fw="normal" color="dark" style={{ marginLeft: 20 }}>
               <Tooltip
                 position="top-start"
                 label={online ? "Online" : "Offline"}>
@@ -274,11 +270,7 @@ function DownloadButton({ book }: { book: string }) {
       radius="sm"
       onClick={onClick}
       style={{ fontWeight: "normal", width: 80 }}>
-      {isInFlight ? (
-        <Loader type="dots" color="gray" />
-      ) : (
-        <span>Download</span>
-      )}
+      {isInFlight ? <Loader type="dots" color="gray" /> : <span>Download</span>}
     </Button>
   );
 }

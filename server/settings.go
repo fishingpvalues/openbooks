@@ -14,7 +14,8 @@ import (
 // Settings are the runtime-configurable parts of the server config. The
 // download directory and persistence flag were previously fixed at startup;
 // the settings endpoints let a running instance change the save location
-// without a restart.
+// without a restart. (Ported from the fork's a65ef3d settings work; the
+// endpoints are behind the v5 token middleware like every data route.)
 type Settings struct {
 	mu          sync.RWMutex
 	DownloadDir string `json:"downloadDir"`
@@ -125,7 +126,7 @@ func libraryPath(name string) string {
 }
 
 // rejectInvalidDir reports whether dir fails the minimal checks applied
-// before SetDownloadDir does the full validation. Exported for tests.
+// before SetDownloadDir does the full validation.
 func rejectInvalidDir(dir string) bool {
 	return !filepath.IsAbs(dir) || dir == "/" || strings.Contains(dir, "\x00")
 }

@@ -1,4 +1,5 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { getToken } from "./token";
 import { getApiURL } from "./util";
 
 export interface IrcServer {
@@ -16,10 +17,23 @@ export const openbooksApi = createApi({
   baseQuery: fetchBaseQuery({
     baseUrl: getApiURL().href,
     credentials: "include",
-    mode: "cors"
+    mode: "cors",
+    prepareHeaders: (headers) => {
+      const t = getToken();
+      if (t) {
+        headers.set("Authorization", `Bearer ${t}`);
+      }
+      return headers;
+    }
   }),
   tagTypes: ["books", "servers"],
   endpoints: (builder) => ({
+    getHealth: builder.query<
+      { name: string; version: string; persist: boolean },
+      null
+    >({
+      query: () => "api/v1/health"
+    }),
     getServers: builder.query<string[], null>({
       query: () => `servers`,
       transformResponse: (ircServers: IrcServer) => {
@@ -40,5 +54,9 @@ export const openbooksApi = createApi({
   })
 });
 
-export const { useGetServersQuery, useGetBooksQuery, useDeleteBookMutation } =
-  openbooksApi;
+export const {
+  useGetHealthQuery,
+  useGetServersQuery,
+  useGetBooksQuery,
+  useDeleteBookMutation
+} = openbooksApi;

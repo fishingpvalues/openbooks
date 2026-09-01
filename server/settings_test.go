@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// TestRejectInvalidDir covers the pre-validation helper used before
+// SetDownloadDir does its full checks. Ported from the fork's a65ef3d
+// settings work.
 func TestRejectInvalidDir(t *testing.T) {
 	cases := []struct {
 		dir  string
@@ -32,6 +35,9 @@ func TestRejectInvalidDir(t *testing.T) {
 	}
 }
 
+// TestSettingsValidation covers SetDownloadDir's validation directly:
+// bad inputs are refused, a real dir is created with its books/ child,
+// a regular file is not an acceptable target, and persist round-trips.
 func TestSettingsValidation(t *testing.T) {
 	tmp := t.TempDir()
 

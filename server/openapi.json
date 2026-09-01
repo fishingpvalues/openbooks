@@ -1,0 +1,608 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "OpenBooks API",
+    "version": "5.0.0",
+    "summary": "PotatoStack patched build of evan-buss/openbooks: IRC Highway eBook search and download, plus a REST API",
+    "description": "PotatoStack v5 of evan-buss/openbooks (upstream base v4.5.0). Adds bearer-token authentication on every API route, a REST API (/api/v1) on top of the websocket-only upstream app, path-traversal hardening on all library endpoints, loopback-only bind by default, TLS verification for IRC, and vulnerability fixes in the dependency tree. All /api/v1 and legacy endpoints require a token when the server was started with OPENBOOKS_TOKEN (Authorization: Bearer header, X-OpenBooks-Token header, or ?token= query parameter). Only the static SPA and this document are unauthenticated."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The openbooks base path (e.g. http://host:8083/ or http://host:8083/openbooks/)"
+    }
+  ],
+  "security": [
+    {
+      "openbooksToken": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "meta",
+      "description": "Health and API discovery"
+    },
+    {
+      "name": "library",
+      "description": "Persisted eBook files (requires --persist)"
+    },
+    {
+      "name": "irc",
+      "description": "IRC Highway search and download"
+    }
+  ],
+  "paths": {
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "This OpenAPI document",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3 document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Server health and version; the UI uses this as its token probe",
+        "responses": {
+          "200": {
+            "description": "Server is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/library": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "List persisted books",
+        "description": "Requires the server to run with --persist. Returns files in the books directory (dotfiles and *.temp staging files excluded). Subdirectories are listed as flat entries; use the download endpoint with the subdirectory prefix to fetch files inside them.",
+        "responses": {
+          "200": {
+            "description": "Book list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BookFile"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Persist mode is off or the library is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/library/{name}": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Download a book file",
+        "description": "The name may contain percent-encoded subfolder prefixes (the bookdl pipeline organizes into subfolders). Every path component is validated to stay inside the books directory.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "File name, optionally with subdirectory prefix, URL-encoded"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The book file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or traversal file name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Persist mode off or file not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Delete one top-level book file",
+        "description": "Only a single top-level entry can be deleted (same hardening as the upstream endpoint). Subdirectory content is not exposed to DELETE.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Invalid or traversal file name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "description": "Delete failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/search": {
+      "post": {
+        "tags": [
+          "irc"
+        ],
+        "summary": "Search IRC Highway for books",
+        "description": "Sends the query to the IRC search bot and, by default, blocks until the parsed results arrive (120 s timeout). The first call opens the shared server-side IRC session; subsequent searches are rate limited to the configured search interval (default 10 s) with 429. Results are parsed book rows; the `full` field is the `!`-prefixed identifier to hand to /api/v1/download.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing query or invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "Another search is already in flight",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited (search interval)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Could not connect to the IRC server",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/download": {
+      "post": {
+        "tags": [
+          "irc"
+        ],
+        "summary": "Request a book download over DCC",
+        "description": "Asks the IRC book server to send the file to openbooks. The file lands in the books directory (it may take a while - DCC transfer speed). Poll GET /api/v1/library until the new file appears.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or malformed book identifier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "502": {
+            "description": "Could not connect to the IRC server",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "summary": "Get current runtime settings",
+        "description": "The download directory and persistence flag in effect for this running instance.",
+        "operationId": "getSettings",
+        "responses": {
+          "200": {
+            "description": "Settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update runtime settings",
+        "description": "Change the download directory and/or persistence flag without a restart. The new directory must be absolute, existing or creatable, and writable; a rejected change leaves the settings untouched.",
+        "operationId": "updateSettings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or rejected download dir"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "openbooksToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The OPENBOOKS_TOKEN value. Accepted as Authorization: Bearer, X-OpenBooks-Token header, or ?token= query parameter. When the server has no token configured (single-user desktop mode) no credential is needed."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid token",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "openbooks"
+          },
+          "version": {
+            "type": "string",
+            "example": "5.0.0"
+          },
+          "persist": {
+            "type": "boolean"
+          }
+        }
+      },
+      "BookFile": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "downloadLink": {
+            "type": "string",
+            "example": "/api/v1/library/Book.zip"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "modifiedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "example": "the great gatsby"
+          },
+          "wait": {
+            "type": "boolean",
+            "default": true,
+            "description": "Block until results arrive (default). false = fire and forget."
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "books": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookDetail"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParseError"
+            }
+          },
+          "waited": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string",
+            "description": "Set on timeout or no results"
+          }
+        }
+      },
+      "BookDetail": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string"
+          },
+          "full": {
+            "type": "string",
+            "description": "The !-prefixed identifier to pass to /api/v1/download"
+          }
+        }
+      },
+      "ParseError": {
+        "type": "object",
+        "properties": {
+          "line": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "DownloadRequest": {
+        "type": "object",
+        "required": [
+          "book"
+        ],
+        "properties": {
+          "book": {
+            "type": "string",
+            "example": "!Book Author - Title.zip",
+            "description": "The !-prefixed identifier from the search results"
+          }
+        }
+      },
+      "Settings": {
+        "type": "object",
+        "properties": {
+          "downloadDir": {
+            "type": "string",
+            "description": "Directory where downloads are saved; the library lives in downloadDir/books."
+          },
+          "persist": {
+            "type": "boolean",
+            "description": "Keep books after sending them to the client. When false, a served book is deleted afterwards."
+          }
+        },
+        "required": [
+          "downloadDir",
+          "persist"
+        ]
+      },
+      "SettingsUpdate": {
+        "type": "object",
+        "description": "Partial update: only the provided fields are changed.",
+        "properties": {
+          "downloadDir": {
+            "type": "string"
+          },
+          "persist": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

@@ -7,35 +7,67 @@ import (
 	"testing"
 )
 
+// TestSearchParser checks the legacy V1 parser, which is strict: a line
+// must contain a " - " author separator and a " ::INFO:: " size block.
+// It has no production callers (the live path uses ParseSearchV2, see
+// searchResultHandler in server/irc_events.go); the test pins its strict
+// behavior so a future change cannot silently loosen it. Against the
+// current fixture: 59 result lines, 13 lack " ::INFO:: ", 19 lack " - ",
+// 1 lacks both -> 31 parse errors, 28 results.
 func TestSearchParser(t *testing.T) {
 	reader := strings.NewReader(sampleData)
 	results, errors := ParseSearch(reader)
 
-	if len(errors) > 1 {
-		t.Errorf("Expected 1 errors but got %d\n", len(errors))
+	if len(errors) != 31 {
+		t.Errorf("Expected 31 errors but got %d\n", len(errors))
 		for _, parseError := range errors {
 			t.Log(parseError)
 		}
 	}
 
-	if len(results) != 57 {
-		t.Errorf("Expected 57 results but got %d\n", len(results))
+	if len(results) != 28 {
+		t.Errorf("Expected 28 results but got %d\n", len(results))
 	}
 }
 
+// TestSearchParserV2 checks the parser the production search path uses.
+// It must be lenient: real bot output (and this fixture) contains
+// author-less lines and lines without a " ::INFO:: " size block, and both
+// have to parse - the old strict version dropped ~5% of live search
+// results. All 59 result lines in the fixture must parse (the two Horla
+// "Dante's Inferno" / "Bianca D'Arc" lines are deliberate duplicates and
+// are returned as-is, one entry per line).
 func TestSearchParserV2(t *testing.T) {
 	reader := strings.NewReader(sampleData)
 	results, errors := ParseSearchV2(reader)
 
-	if len(errors) != 1 {
-		t.Errorf("Expected 1 errors but got %d\n", len(errors))
+	if len(errors) != 0 {
+		t.Errorf("Expected 0 errors but got %d\n", len(errors))
 		for _, parseError := range errors {
 			t.Log(parseError)
 		}
 	}
 
-	if len(results) != 57 {
-		t.Errorf("Expected 57 results but got %d\n", len(results))
+	if len(results) != 59 {
+		t.Errorf("Expected 59 results but got %d\n", len(results))
+	}
+
+	// A sample of the lenient-parse guarantees: author-less line parses
+	// with empty author and a correct title (no chopped prefix).
+	byServer := map[string]BookDetail{}
+	for _, b := range results {
+		byServer[b.Server+"|"+b.Title] = b
+	}
+	gatsby, ok := byServer["peapod|The Great Gatsby.pdf"]
+	if !ok {
+		// The title keeps its extension, as the parser returns it.
+		gatsby, ok = byServer["peapod|The Great Gatsby"]
+	}
+	if !ok {
+		t.Fatalf("peapod 'The Great Gatsby' line did not parse")
+	}
+	if gatsby.Author != "" || gatsby.Size != "254.73KB" {
+		t.Errorf("lenient line parsed wrong: %+v", gatsby)
 	}
 }
 

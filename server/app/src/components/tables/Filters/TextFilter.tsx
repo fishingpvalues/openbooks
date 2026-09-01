@@ -38,8 +38,8 @@ export function TextFilter<TData extends object>({
               ? "var(--mantine-color-brand-3)"
               : "var(--mantine-color-dark-3)"
             : filterValue
-            ? "var(--mantine-color-brand-4)"
-            : "var(--mantine-color-dark-1)"
+              ? "var(--mantine-color-brand-4)"
+              : "var(--mantine-color-dark-1)"
       }}>
       {icon}
     </Box>

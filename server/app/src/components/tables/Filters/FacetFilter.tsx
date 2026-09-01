@@ -54,19 +54,20 @@ const useStyles = createStyles((theme) => {
   };
 });
 
-interface FacetFilterProps<TData extends object, TValue extends string = string> {
+interface FacetFilterProps<
+  TData extends object,
+  TValue extends string = string
+> {
   placeholder: string;
   column: Column<LegacyFeatures, TData, TValue>;
   table: Table<LegacyFeatures, TData>;
   Entry: React.FC<FacetEntryProps>;
 }
 
-export default function FacetFilter<TData extends object, TValue extends string = string>({
-  placeholder,
-  column,
-  table,
-  Entry
-}: FacetFilterProps<TData, TValue>) {
+export default function FacetFilter<
+  TData extends object,
+  TValue extends string = string
+>({ placeholder, column, table, Entry }: FacetFilterProps<TData, TValue>) {
   const [filter, setFilter] = useState("");
   const [opened, setOpened] = useState(false);
 
@@ -88,8 +89,8 @@ export default function FacetFilter<TData extends object, TValue extends string 
         ? "brand.2"
         : "dark.0"
       : filterValue.length > 0
-      ? "brand.4"
-      : "gray.7";
+        ? "brand.4"
+        : "gray.7";
 
   return (
     <Popover

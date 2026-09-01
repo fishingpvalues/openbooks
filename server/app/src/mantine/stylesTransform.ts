@@ -5,11 +5,7 @@
 // the resulting class names are returned for the matching style names.
 
 import type { MantineStylesTransform } from "@mantine/core";
-import {
-  injectCss,
-  serializeStyleBlock,
-  type StyleValue
-} from "./serializer";
+import { injectCss, serializeStyleBlock, type StyleValue } from "./serializer";
 
 type StyleRecord = Record<string, unknown>;
 

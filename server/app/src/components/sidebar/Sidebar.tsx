@@ -27,9 +27,7 @@ import Library from "./Library";
 const useStyles = createStyles((theme) => ({
   footer: {
     borderTop: `1px solid ${
-      theme.colorScheme === "dark"
-        ? theme.colors.dark[4]
-        : theme.colors.gray[3]
+      theme.colorScheme === "dark" ? theme.colors.dark[4] : theme.colors.gray[3]
     }`,
     paddingTop: theme.spacing.sm
   }

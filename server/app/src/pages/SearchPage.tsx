@@ -29,18 +29,18 @@ const useStyles = createStyles(
       width: "100%"
     },
     errorToggle: {
-      alignSelf: "start",
-      height: "24px",
-      marginBottom: theme.spacing.xs,
-      fontWeight: 500,
-      color:
+      "alignSelf": "start",
+      "height": "24px",
+      "marginBottom": theme.spacing.xs,
+      "fontWeight": 500,
+      "color":
         theme.colorScheme === "dark"
           ? errorMode
             ? theme.colors.dark[8]
             : theme.colors.dark[2]
           : errorMode
-          ? theme.white
-          : theme.colors.dark[3],
+            ? theme.white
+            : theme.colors.dark[3],
       "&:hover": {
         backgroundColor:
           theme.colorScheme === "dark"
@@ -48,8 +48,8 @@ const useStyles = createStyles(
               ? theme.colors.brand[3]
               : theme.colors.dark[7]
             : errorMode
-            ? theme.colors.brand[5]
-            : theme.colors.gray[1]
+              ? theme.colors.brand[5]
+              : theme.colors.gray[1]
       }
     }
   })

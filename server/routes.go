@@ -24,26 +24,13 @@ import (
 //go:embed app/dist
 var reactClient embed.FS
 
-func (server *server) registerRoutes() *chi.Mux {
-	router := chi.NewRouter()
-	router.Handle("/*", server.staticFilesHandler("app/dist"))
-	router.Get("/ws", server.serveWs())
-	router.Get("/stats", server.statsHandler())
-	router.Get("/servers", server.serverListHandler())
-
-	router.Group(func(r chi.Router) {
-		r.Use(server.requireUser)
-		r.Get("/library", server.getAllBooksHandler())
-		r.Delete("/library/{fileName}", server.deleteBooksHandler())
-		r.Get("/library/*", server.getBookHandler())
-		r.Get("/settings", server.settingsHandler())
-		r.Put("/settings", server.settingsHandler())
-	})
-
-	return router
-}
-
 // serveWs handles websocket requests from the peer.
+//
+// PotatoStack v5: auth comes from the requireToken middleware (the route is
+// wrapped in registerRoutes), so a token-less upgrade is already a 401
+// before this handler runs. The CheckOrigin pin below keeps the websocket
+// same-origin-only; upstream set it to "always allow", which let any site
+// open the connection and drive IRC searches for the connected identity.
 func (server *server) serveWs() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("OpenBooks")
@@ -62,15 +49,37 @@ func (server *server) serveWs() http.HandlerFunc {
 		userId, err := uuid.Parse(cookie.Value)
 		_, alreadyConnected := server.clients[userId]
 
+		// The single-IRC-connection rule applies to BROWSER clients only:
+		// the api client (apiClientID) holds the server-owned session for
+		// the /api/v1 endpoints and must never block the UI (and vice
+		// versa).
+		wsClients := 0
+		for id := range server.clients {
+			if id != apiClientID {
+				wsClients++
+			}
+		}
+
 		// If invalid UUID or the same browser tries to connect again or multiple browser connections
 		// Don't connect to IRC or create new client
-		if err != nil || alreadyConnected || len(server.clients) > 0 {
+		if err != nil || alreadyConnected || wsClients > 0 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
+		// Same-origin only: browsers send the Origin header, and for a
+		// websocket to the same site Origin == scheme://host must match
+		// Host. Missing Origin (non-browser clients) is allowed - those go
+		// through the token check above like everything else.
 		upgrader.CheckOrigin = func(req *http.Request) bool {
-			return true
+			if req.Header.Get("Origin") == "" {
+				return true
+			}
+			origin, err := url.Parse(req.Header.Get("Origin"))
+			if err != nil {
+				return false
+			}
+			return origin.Host == req.Host
 		}
 
 		conn, err := upgrader.Upgrade(w, r, w.Header())
@@ -120,10 +129,17 @@ func (server *server) statsHandler() http.HandlerFunc {
 		result := make([]statsReponse, 0, len(server.clients))
 
 		for _, client := range server.clients {
+			// The api client (server-owned IRC session, see api.go) has no
+			// websocket connection - a nil conn is the normal case for it.
+			ip := ""
+			if client.conn != nil {
+				ip = client.conn.RemoteAddr().String()
+			}
+
 			details := statsReponse{
 				UUID: client.uuid.String(),
 				Name: client.irc.Username,
-				IP:   client.conn.RemoteAddr().String(),
+				IP:   ip,
 			}
 
 			result = append(result, details)
@@ -183,25 +199,52 @@ func (server *server) getAllBooksHandler() http.HandlerFunc {
 	}
 }
 
+// getBookHandler serves GET /library/{fileName...}.
+//
+// PotatoStack v5: the wildcard may contain subfolders (the bookdl pipeline
+// organizes into subdirectories), so the whole capture is validated with
+// safeJoin instead of taking the last path segment. Without this, nested
+// books were simply un-downloadable, and a "..%2F" sequence was a traversal
+// (see deleteBooksHandler's comment for the upstream story).
 func (server *server) getBookHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, fileName := path.Split(r.URL.Path)
-		bookPath := filepath.Join(server.settings.GetDownloadDir(), "books", fileName)
+		base := server.libraryBase()
+		// chi wildcard: <basepath>library/<name>
+		raw := strings.TrimPrefix(r.URL.Path, server.config.Basepath+"library/")
+		name, err := urlUnescapePath(raw)
+		if err != nil || name == "" {
+			http.Error(w, "invalid file name", http.StatusBadRequest)
+			return
+		}
 
-		http.ServeFile(w, r, bookPath)
+		target, ok := safeJoin(base, name)
+		if !ok {
+			server.log.Printf("Rejected book path outside library: %q\n", name)
+			http.Error(w, "invalid file name", http.StatusBadRequest)
+			return
+		}
 
+		if _, err := os.Stat(target); err != nil {
+			http.Error(w, "book not found", http.StatusNotFound)
+			return
+		}
+
+		http.ServeFile(w, r, target)
+
+		// Non-persist mode serves the file, then removes it - upstream
+		// behavior, kept verbatim: the download link must still work
+		// before the book disappears.
 		if !server.settings.GetPersist() {
-			err := os.Remove(bookPath)
-			if err != nil {
+			if err := os.Remove(target); err != nil {
 				server.log.Printf("Error when deleting book file. %s", err)
 			}
 		}
 	}
 }
 
-// validBookName reports whether name is a single safe file name for a
-// book: one path segment, no separator, no traversal component, no
-// NUL, and not a dot file (the library list hides those).
+// validBookName reports whether fileName is a plausible book file name:
+// one path segment, no traversal or NUL, not a dotfile. Shared by the
+// delete handler and the test suite.
 func validBookName(fileName string) bool {
 	if fileName == "" || fileName == "." || fileName == ".." {
 		return false

@@ -13,7 +13,8 @@ import (
 )
 
 // version will always match the GitHub release versions.
-var version = "4.5.0"
+// v5.0.0: PotatoStack patched line (auth, REST API, security fixes).
+var version = "5.0.0"
 
 // We only increment ircVersion when irc admins require a fix to be made.
 // They can block / permit certain version numbers. ircVersion is the current permitted

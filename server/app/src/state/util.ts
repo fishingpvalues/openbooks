@@ -1,4 +1,5 @@
 import { showNotification } from "@mantine/notifications";
+import { getToken } from "./token";
 import { Notification, NotificationType } from "./messages";
 
 export const getWebsocketURL = (): URL => {
@@ -11,6 +12,11 @@ export const getWebsocketURL = (): URL => {
 
   if (import.meta.env.DEV) {
     websocketURL.port = "5228";
+  }
+
+  const token = getToken();
+  if (token) {
+    websocketURL.searchParams.set("token", token);
   }
 
   return websocketURL;
@@ -68,6 +74,11 @@ export function downloadFile(relativeURL?: string) {
 
   let url = getApiURL();
   url.pathname += relativeURL;
+
+  const token = getToken();
+  if (token) {
+    url.searchParams.set("token", token);
+  }
 
   let link = document.createElement("a");
   link.download = "";

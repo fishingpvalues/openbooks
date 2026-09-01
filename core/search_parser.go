@@ -198,8 +198,13 @@ func parseLineV2(line string) (BookDetail, error) {
 	getAuthor := func(line string) (string, error) {
 		firstSpace := strings.Index(line, " ")
 		dashChar := strings.Index(line, " - ")
-		if dashChar == -1 {
-			return "", errors.New("unable to parse author")
+		if dashChar == -1 || dashChar < firstSpace+len(" ") {
+			// No " - " author separator. Real search results (and the test
+			// fixture) contain author-less lines - e.g.
+			//   !Bsk TheGreatGatsby.epub ::INFO:: 237.78KB
+			// Returning "" (instead of an error) keeps them in the result
+			// set. Hard-failing here dropped ~5% of live search results.
+			return "", nil
 		}
 		author := line[firstSpace+len(" ") : dashChar]
 
@@ -216,6 +221,19 @@ func parseLineV2(line string) (BookDetail, error) {
 		title := ""
 		fileFormat := ""
 		endIndex := -1
+
+		// Title start: after the " - " author separator when present,
+		// otherwise right after the server name (author-less lines).
+		// The old code sliced line[2:endTitle] for these, dropping the
+		// first two characters of the title.
+		dashIdx := strings.Index(line, " - ")
+		titleStart := dashIdx + len(" - ")
+		if dashIdx == -1 {
+			if sp := strings.Index(line, " "); sp != -1 {
+				titleStart = sp + 1
+			}
+		}
+
 		// Get the Title
 		for _, ext := range fileTypes { //Loop through each possible file extension we've got on record
 			endTitle := strings.Index(line, "."+ext) // check if it contains our extension
@@ -230,8 +248,7 @@ func parseLineV2(line string) (BookDetail, error) {
 					}
 				}
 			}
-			startIndex := strings.Index(line, " - ")
-			title = line[startIndex+len(" - ") : endTitle]
+			title = line[titleStart : endTitle]
 			endIndex = endTitle
 		}
 

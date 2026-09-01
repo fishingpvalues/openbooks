@@ -36,7 +36,7 @@ export const websocketConn =
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => onOpen(dispatch);
-    socket.onclose = () => onClose(dispatch);
+    socket.onclose = (event: CloseEvent) => onClose(dispatch, event.code);
     socket.onmessage = (message) => route(dispatch, message);
     socket.onerror = (event) =>
       displayNotification({
@@ -72,9 +72,17 @@ const onOpen = (dispatch: AppDispatch): void => {
   dispatch(sendMessage({ type: MessageType.CONNECT, payload: {} }));
 };
 
-const onClose = (dispatch: AppDispatch): void => {
+const onClose = (dispatch: AppDispatch, closeCode: number): void => {
   console.log("WebSocket closed.");
   dispatch(setConnectionState(false));
+  if (closeCode !== 1000) {
+    displayNotification({
+      appearance: NotificationType.WARNING,
+      title: "Disconnected from server",
+      detail: `Close code ${closeCode}. If this is unexpected, your token may be invalid - check it.`,
+      timestamp: new Date().getTime()
+    });
+  }
 };
 
 const route = (dispatch: AppDispatch, msg: MessageEvent<any>): void => {

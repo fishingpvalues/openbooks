@@ -17,11 +17,7 @@
 import { useContext, useLayoutEffect, useMemo } from "react";
 import { MantineContext, useSafeMantineTheme } from "@mantine/core";
 import type { MantineColorScheme, MantineTheme } from "@mantine/core";
-import {
-  injectCss,
-  serializeStyleBlock,
-  type StyleValue
-} from "./serializer";
+import { injectCss, serializeStyleBlock, type StyleValue } from "./serializer";
 
 export type CompatMantineTheme = Omit<MantineTheme, "colors"> & {
   colors: Record<string, readonly string[]>;
@@ -106,9 +102,7 @@ export function useCompatTheme(): CompatMantineTheme {
 
 export function createStyles<TParams extends object = Record<string, never>>(
   callback: StylesCallback<TParams>
-): (
-  params?: TParams
-) => {
+): (params?: TParams) => {
   classes: Record<string, string>;
   cx: typeof cx;
   theme: CompatMantineTheme;

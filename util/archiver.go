@@ -7,13 +7,47 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mholt/archiver/v3"
 )
 
 var (
-	ErrNotFullyCopied = errors.New("didn't copy entire file from the archive")
+	ErrNotFullyCopied  = errors.New("didn't copy entire file from the archive")
+	ErrBadArchiveEntry = errors.New("archive entry escapes the download directory (path traversal)")
 )
+
+// archiveRoot is the directory a downloaded .temp file sits in. Every entry
+// name the archive hands us is resolved against it and rejected if the
+// resolved path leaves it.
+func archiveRoot(archivePath string) string {
+	return filepath.Dir(archivePath)
+}
+
+// safeArchiveTarget resolves archivePath + entryName and refuses the result
+// if it lands outside the archive's own directory.
+//
+// archiver/v3 is unmaintained and the path-traversal issues it was reported
+// with (GO-2024-2698, GO-2025-3605) have no fixed release, so the guard lives
+// here, in the only call site that extracts downloaded archives: a crafted
+// archive can no longer write through ../ sequences into the book library or
+// the container.
+func safeArchiveTarget(archivePath, entryName string) (string, error) {
+	if entryName == "" || entryName == "." || entryName == ".." ||
+		strings.ContainsRune(entryName, 0) {
+		return "", ErrBadArchiveEntry
+	}
+
+	base := archiveRoot(archivePath)
+	target := filepath.Join(base, entryName)
+
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ErrBadArchiveEntry
+	}
+
+	return target, nil
+}
 
 func ExtractArchive(archivePath string) (string, error) {
 	// Our path will have a .temp appended to it so we can't rely on the automatic file-extension based archive extractor selection.
@@ -30,9 +64,26 @@ func ExtractArchive(archivePath string) (string, error) {
 
 	var newPath string
 	err = w.Walk(archivePath, func(f archiver.File) error {
-		newPath = filepath.Join(filepath.Dir(archivePath), f.Name()+".temp")
+		// target (not newPath) on purpose: safeArchiveTarget returns an
+		// error, so a plain `newPath, err :=` here would shadow the
+		// outer newPath and ExtractArchive would silently return the
+		// archive itself instead of the extracted file.
+		target, err := safeArchiveTarget(archivePath, f.Name()+".temp")
+		if err != nil {
+			return err
+		}
+		newPath = target
 
-		out, err := os.Create(newPath)
+		// RAR dictionaries can claim absurd sizes (GO-2025-4020, no
+		// fixed release): cap entries at 5 GiB, far beyond any real
+		// ebook. Rejecting rather than truncating keeps the library
+		// free of half-written files.
+		const maxEntrySize = int64(5) << 30
+		if f.Size() > maxEntrySize {
+			return fmt.Errorf("archive entry too large: %s (%d bytes)", f.Name(), f.Size())
+		}
+
+		out, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			return err
 		}
