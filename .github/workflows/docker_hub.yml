@@ -15,6 +15,14 @@ on:
     tags:
       - "v*.*.*"
 
+# The repo's default workflow token permission is read-only, which
+# makes the GITHUB_TOKEN used by docker/login-action + buildx a
+# read-only GHCR client ("denied: installation not allowed to Create
+# organization package"). packages: write is the minimum scope the
+# push needs.
+permissions:
+  packages: write
+
 jobs:
   build:
     runs-on: ubuntu-latest

@@ -8,6 +8,12 @@ on:
     tags:
       - "v*.*.*"
 
+# The repo's default workflow token permission is read-only, so the
+# GITHUB_TOKEN used by this workflow cannot create a release without
+# an explicit scope. This is the only permission this job needs.
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Upload Release Asset
