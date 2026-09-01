@@ -197,18 +197,55 @@ func (server *server) getBookHandler() http.HandlerFunc {
 	}
 }
 
+// POTATOSTACK PATCH: arbitrary file deletion via the {fileName} parameter.
+//
+// chi routes on URL.RawPath when it is set, so the parameter still holds its
+// percent-encoding, and the explicit url.PathUnescape below then turns
+// "..%2F..%2Fx" into "../../x" AFTER routing has already accepted it as one
+// path segment. filepath.Join collapses that and os.Remove deletes outside the
+// books directory. Reachable unauthenticated: gluetun publishes this UI on
+// 127.0.0.1:8083 and 8083 is in TAILSCALE_SERVE_PORTS, so every tailnet peer
+// can call it. openbooks has no auth of its own.
+//
+// Neither error branch returned either, so an unescape failure fell through
+// and called os.Remove with an empty name, and both branches wrote a second
+// header after the first.
 func (server *server) deleteBooksHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fileName, err := url.PathUnescape(chi.URLParam(r, "fileName"))
 		if err != nil {
 			server.log.Printf("Error unescaping path: %s\n", err)
-			w.WriteHeader(http.StatusInternalServerError)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 
-		err = os.Remove(filepath.Join(server.config.DownloadDir, "books", fileName))
-		if err != nil {
+		// A book file name is one path segment. Anything carrying a separator,
+		// a traversal component or a NUL is a request for a file this endpoint
+		// does not own.
+		if fileName == "" || fileName == "." || fileName == ".." ||
+			strings.ContainsAny(fileName, `/\`) || strings.ContainsRune(fileName, 0) {
+			server.log.Printf("Rejected book file name: %q\n", fileName)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		base := filepath.Join(server.config.DownloadDir, "books")
+		target := filepath.Join(base, fileName)
+
+		// Defence in depth: the checks above already exclude separators, so this
+		// only catches a base that is itself odd, but it costs nothing and keeps
+		// the guarantee local to the call that acts on it.
+		rel, err := filepath.Rel(base, target)
+		if err != nil || rel != fileName {
+			server.log.Printf("Rejected book path outside library: %q\n", fileName)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		if err := os.Remove(target); err != nil {
 			server.log.Printf("Error deleting book file: %s\n", err)
 			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 	}
 }

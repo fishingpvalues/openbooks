@@ -1,4 +1,4 @@
-import { createStyles } from "@mantine/core";
+import { createStyles } from "../../mantine/createStyles";
 
 export const useTableStyles = createStyles((theme) => ({
   container: {

@@ -1,13 +1,12 @@
 import { ScrollArea, Table, Text } from "@mantine/core";
 import { useElementSize, useMergedRef, useTextSelection } from "@mantine/hooks";
+import { flexRender } from "@tanstack/react-table";
 import {
-  createColumnHelper,
-  flexRender,
   getCoreRowModel,
   getFilteredRowModel,
-  Row,
-  useReactTable
-} from "@tanstack/react-table";
+  legacyCreateColumnHelper,
+  useLegacyTable
+} from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass, WarningCircle } from "phosphor-react";
 import { useEffect, useMemo, useRef } from "react";
@@ -15,7 +14,7 @@ import { ParseError } from "../../state/messages";
 import { TextFilter } from "./Filters/TextFilter";
 import { useTableStyles } from "./styles";
 
-const columnHelper = createColumnHelper<ParseError>();
+const columnHelper = legacyCreateColumnHelper<ParseError>();
 
 interface ErrorTableProps {
   errors: ParseError[];
@@ -35,12 +34,15 @@ export default function ErrorTable({
 
   const { classes, cx, theme } = useTableStyles();
   const { ref: elementSizeRef, height, width } = useElementSize();
-  const virtualizerRef = useRef();
-  const mergedRef = useMergedRef(elementSizeRef, virtualizerRef);
+  const virtualizerRef = useRef<HTMLDivElement | null>(null);
+  const mergedRef = useMergedRef<HTMLDivElement | null>(
+    elementSizeRef,
+    virtualizerRef
+  );
 
   const columns = useMemo(() => {
     const cols = (cols: number) => (width / 12) * cols;
-    return [
+    return columnHelper.columns([
       columnHelper.accessor("line", {
         header: (props) => (
           <TextFilter
@@ -66,10 +68,10 @@ export default function ErrorTable({
         size: cols(3),
         enableColumnFilter: false
       })
-    ];
+    ]);
   }, [width]);
 
-  const table = useReactTable({
+  const table = useLegacyTable({
     data: errors,
     columns: columns,
     enableFilters: true,
@@ -99,7 +101,7 @@ export default function ErrorTable({
 
   return (
     <>
-      <Text size="sm" color="dimmed" sx={{ width: "100%" }} mb={4}>
+      <Text size="sm" color="dimmed" w="100%" mb={4}>
         These results could not be parsed to due to their non-standard format.
         To download, copy the line up to the <code>::INFO::</code> or file size
         at the end and paste into the text box above.
@@ -112,7 +114,7 @@ export default function ErrorTable({
         scrollbarSize={6}
         styles={{ thumb: { ["&::before"]: { minWidth: 4 } } }}
         offsetScrollbars={false}>
-        <Table highlightOnHover verticalSpacing="sm" fontSize="xs">
+        <Table highlightOnHover verticalSpacing="sm" fz="xs">
           <thead className={classes.head}>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
@@ -152,9 +154,7 @@ export default function ErrorTable({
               </tr>
             )}
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const row = tableRows[
-                virtualRow.index
-              ] as unknown as Row<ParseError>;
+              const row = tableRows[virtualRow.index];
               return (
                 <tr key={row.id} style={{ height: 50 }}>
                   {row.getVisibleCells().map((cell) => {

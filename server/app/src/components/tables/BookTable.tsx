@@ -8,17 +8,17 @@ import {
   Tooltip
 } from "@mantine/core";
 import { useElementSize, useMergedRef } from "@mantine/hooks";
+import type { FilterFn } from "@tanstack/react-table";
+import { flexRender } from "@tanstack/react-table";
 import {
-  createColumnHelper,
-  FilterFn,
-  flexRender,
   getCoreRowModel,
   getFacetedRowModel,
   getFacetedUniqueValues,
   getFilteredRowModel,
-  Row,
-  useReactTable
-} from "@tanstack/react-table";
+  LegacyFeatures,
+  legacyCreateColumnHelper,
+  useLegacyTable
+} from "@tanstack/react-table/legacy";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass, User } from "phosphor-react";
 import { useMemo, useRef, useState } from "react";
@@ -34,12 +34,12 @@ import FacetFilter, {
 import { TextFilter } from "./Filters/TextFilter";
 import { useTableStyles } from "./styles";
 
-const columnHelper = createColumnHelper<BookDetail>();
+const columnHelper = legacyCreateColumnHelper<BookDetail>();
 
-const stringInArray: FilterFn<any> = (
+const stringInArray: FilterFn<LegacyFeatures, BookDetail> = (
   row,
-  columnId: string,
-  filterValue: string[] | undefined
+  columnId,
+  filterValue
 ) => {
   if (!filterValue || filterValue.length === 0) return true;
 
@@ -51,16 +51,19 @@ interface BookTableProps {
 }
 
 export default function BookTable({ books }: BookTableProps) {
-  const { classes, cx, theme } = useTableStyles();
+  const { classes, cx } = useTableStyles();
   const { data: servers } = useGetServersQuery(null);
 
   const { ref: elementSizeRef, height, width } = useElementSize();
-  const virtualizerRef = useRef();
-  const mergedRef = useMergedRef(elementSizeRef, virtualizerRef);
+  const virtualizerRef = useRef<HTMLDivElement | null>(null);
+  const mergedRef = useMergedRef<HTMLDivElement | null>(
+    elementSizeRef,
+    virtualizerRef
+  );
 
   const columns = useMemo(() => {
     const cols = (cols: number) => (width / 12) * cols;
-    return [
+    return columnHelper.columns([
       columnHelper.accessor("server", {
         header: (props) => (
           <FacetFilter
@@ -74,8 +77,8 @@ export default function BookTable({ books }: BookTableProps) {
           const online = servers?.includes(props.getValue());
           return (
             <Text
-              size={12}
-              weight="normal"
+              fz={12}
+              fw="normal"
               color="dark"
               style={{ marginLeft: 20 }}>
               <Tooltip
@@ -144,14 +147,12 @@ export default function BookTable({ books }: BookTableProps) {
         header: "Download",
         size: cols(1),
         enableColumnFilter: false,
-        cell: ({ row }) => (
-          <DownloadButton book={row.original.full}></DownloadButton>
-        )
+        cell: ({ row }) => <DownloadButton book={row.original.full} />
       })
-    ];
+    ]);
   }, [width, servers]);
 
-  const table = useReactTable({
+  const table = useLegacyTable({
     data: books,
     columns: columns,
     enableFilters: true,
@@ -189,7 +190,7 @@ export default function BookTable({ books }: BookTableProps) {
       scrollbarSize={6}
       styles={{ thumb: { ["&::before"]: { minWidth: 4 } } }}
       offsetScrollbars={false}>
-      <Table highlightOnHover verticalSpacing="sm" fontSize="xs">
+      <Table highlightOnHover verticalSpacing="sm" fz="xs">
         <thead className={classes.head}>
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
@@ -223,9 +224,7 @@ export default function BookTable({ books }: BookTableProps) {
             </tr>
           )}
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            const row = tableRows[
-              virtualRow.index
-            ] as unknown as Row<BookDetail>;
+            const row = tableRows[virtualRow.index];
             return (
               <tr key={row.id} style={{ height: 50 }}>
                 {row.getVisibleCells().map((cell) => {
@@ -271,13 +270,12 @@ function DownloadButton({ book }: { book: string }) {
 
   return (
     <Button
-      compact
       size="xs"
       radius="sm"
       onClick={onClick}
-      sx={{ fontWeight: "normal", width: 80 }}>
+      style={{ fontWeight: "normal", width: 80 }}>
       {isInFlight ? (
-        <Loader variant="dots" color="gray" />
+        <Loader type="dots" color="gray" />
       ) : (
         <span>Download</span>
       )}

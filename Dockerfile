@@ -1,4 +1,4 @@
-FROM node:16 as web
+FROM node:24-alpine as web
 WORKDIR /web
 COPY . .
 WORKDIR /web/server/app/

@@ -1,24 +1,27 @@
 import { Box, TextInput } from "@mantine/core";
+import { useMantineColorScheme } from "@mantine/core";
 import { getHotkeyHandler } from "@mantine/hooks";
-import { Column, Table } from "@tanstack/react-table";
+import type { Column, Table } from "@tanstack/react-table";
+import type { LegacyFeatures } from "@tanstack/react-table/legacy";
 import { useEffect, useState } from "react";
 
-interface TextFilterProps {
+interface TextFilterProps<TData extends object> {
   icon?: React.ReactNode;
   placeholder: string;
-  column: Column<any, string>;
-  table: Table<any>;
+  column: Column<LegacyFeatures, TData, any>;
+  table: Table<LegacyFeatures, TData>;
 }
 
-export function TextFilter({
+export function TextFilter<TData extends object>({
   icon,
   placeholder,
   column,
   table
-}: TextFilterProps) {
+}: TextFilterProps<TData>) {
   const [filterValue, setFilterValue] = useState(
     column.getFilterValue() as string
   );
+  const { colorScheme } = useMantineColorScheme();
 
   useEffect(() => {
     column.setFilterValue(filterValue);
@@ -27,38 +30,38 @@ export function TextFilter({
   const styledIcon = (
     <Box
       component="span"
-      sx={(theme) => ({
+      style={{
         display: "flex",
         color:
-          theme.colorScheme === "dark"
+          colorScheme === "dark"
             ? filterValue
-              ? theme.colors.brand[3]
-              : theme.colors.dark[3]
+              ? "var(--mantine-color-brand-3)"
+              : "var(--mantine-color-dark-3)"
             : filterValue
-            ? theme.colors.brand[4]
-            : theme.colors.dark[1]
-      })}>
+            ? "var(--mantine-color-brand-4)"
+            : "var(--mantine-color-dark-1)"
+      }}>
       {icon}
     </Box>
   );
 
   return (
     <TextInput
-      icon={styledIcon}
+      leftSection={styledIcon}
       size="xs"
       placeholder={placeholder}
-      styles={(theme) => ({
+      styles={{
         input: {
           ["&::placeholder"]: {
             color:
-              theme.colorScheme === "dark"
-                ? theme.colors.dark[0]
-                : theme.colors.gray[7],
+              colorScheme === "dark"
+                ? "var(--mantine-color-dark-0)"
+                : "var(--mantine-color-gray-7)",
             textTransform: "uppercase",
             fontWeight: "bold"
           }
         }
-      })}
+      }}
       variant="unstyled"
       onChange={(e) => setFilterValue(e.currentTarget.value)}
       value={filterValue}

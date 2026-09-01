@@ -9,7 +9,7 @@ import {
   Tooltip,
   useMantineColorScheme
 } from "@mantine/core";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { BellSimpleSlash } from "phosphor-react";
 import { useSelector } from "react-redux";
 import { NotificationType } from "../../state/messages";
@@ -53,8 +53,8 @@ export default function NotificationDrawer() {
         }
       }}
       title={
-        <Group position="apart">
-          <Text weight="bold" size="lg">
+        <Group justify="space-between">
+          <Text fw={700} size="lg">
             Notifications
           </Text>
           <Tooltip label="Clear Notifications" position="left">
@@ -80,7 +80,7 @@ export default function NotificationDrawer() {
         </Center>
       ) : (
         <Stack
-          spacing="xs"
+          gap="xs"
           style={{ overflow: "scroll", height: "calc(100% - 44px)" }}>
           <AnimatePresence mode="popLayout">
             {notifications.map((notif) => (
@@ -93,7 +93,7 @@ export default function NotificationDrawer() {
                   <Text
                     color="dimmed"
                     size="xs"
-                    weight={500}
+                    fw={500}
                     style={{ marginBottom: "0.25rem" }}>
                     {new Date(notif.timestamp).toLocaleTimeString("en-US", {
                       timeStyle: "short"

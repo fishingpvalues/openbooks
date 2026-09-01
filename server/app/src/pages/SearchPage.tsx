@@ -2,10 +2,8 @@ import {
   ActionIcon,
   Button,
   Center,
-  createStyles,
   Group,
   Image,
-  MediaQuery,
   Stack,
   TextInput,
   Title
@@ -13,6 +11,7 @@ import {
 import { MagnifyingGlass, Sidebar, Warning } from "phosphor-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import image from "../assets/reading.svg";
+import { createStyles } from "../mantine/createStyles";
 import BookTable from "../components/tables/BookTable";
 import ErrorTable from "../components/tables/ErrorTable";
 import { MessageType } from "../state/messages";
@@ -30,17 +29,17 @@ const useStyles = createStyles(
       width: "100%"
     },
     errorToggle: {
-      "alignSelf": "start",
-      "height": "24px",
-      "marginBottom": theme.spacing.xs,
-      "fontWeight": 500,
-      "color":
+      alignSelf: "start",
+      height: "24px",
+      marginBottom: theme.spacing.xs,
+      fontWeight: 500,
+      color:
         theme.colorScheme === "dark"
           ? errorMode
             ? theme.colors.dark[8]
             : theme.colors.dark[2]
           : errorMode
-          ? theme.colors.white
+          ? theme.white
           : theme.colors.dark[3],
       "&:hover": {
         backgroundColor:
@@ -110,14 +109,14 @@ export default function SearchPage() {
 
   return (
     <Stack
-      spacing={0}
+      gap={0}
       align="center"
-      sx={(theme) => ({ width: "100%", margin: theme.spacing.xl })}>
+      style={{ width: "100%", margin: theme.spacing.xl }}>
       <form className={classes.wFull} onSubmit={(e) => searchHandler(e)}>
         <Group
-          noWrap
-          spacing="md"
-          sx={(theme) => ({ marginBottom: theme.spacing.md })}>
+          wrap="nowrap"
+          gap="md"
+          style={{ marginBottom: theme.spacing.md }}>
           {!opened && (
             <ActionIcon size="lg" onClick={() => dispatch(toggleSidebar())}>
               <Sidebar weight="bold" size={20}></Sidebar>
@@ -134,7 +133,7 @@ export default function SearchPage() {
             }
             radius="md"
             type="search"
-            icon={<MagnifyingGlass weight="bold" size={22} />}
+            leftSection={<MagnifyingGlass weight="bold" size={22} />}
             required
           />
 
@@ -155,7 +154,7 @@ export default function SearchPage() {
           className={classes.errorToggle}
           variant={errorMode ? "filled" : "subtle"}
           onClick={() => setShowErrors((show) => !show)}
-          leftIcon={<Warning size={18} />}
+          leftSection={<Warning size={18} />}
           size="xs">
           {activeItem?.errors?.length} Parsing{" "}
           {activeItem?.errors?.length === 1 ? "Error" : "Errors"}
@@ -164,25 +163,23 @@ export default function SearchPage() {
       {!activeItem ? (
         <Center style={{ height: "100%", width: "100%" }}>
           <Stack align="center">
-            <Title weight="normal" align="center">
+            <Title fw="normal" ta="center">
               Search a book to get started.
             </Title>
-            <MediaQuery smallerThan="md" styles={{ display: "none" }}>
-              <Image
-                width={600}
-                fit="contain"
-                src={image}
-                alt="person reading"
-              />
-            </MediaQuery>
-            <MediaQuery largerThan="md" styles={{ display: "none" }}>
-              <Image
-                width={300}
-                fit="contain"
-                src={image}
-                alt="person reading"
-              />
-            </MediaQuery>
+            <Image
+              width={600}
+              fit="contain"
+              src={image}
+              alt="person reading"
+              visibleFrom="md"
+            />
+            <Image
+              width={300}
+              fit="contain"
+              src={image}
+              alt="person reading"
+              hiddenFrom="md"
+            />
           </Stack>
         </Center>
       ) : errorMode ? (

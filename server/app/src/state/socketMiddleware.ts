@@ -45,11 +45,14 @@ export const websocketConn =
         timestamp: new Date().getTime()
       });
 
-    return (next: Dispatch<AnyAction>) => (action: PayloadAction<any>) => {
+    // redux 5 types the middleware chain with unknown action/next params, so
+    // narrow at the single entry point instead of per handler.
+    return (next: (action: unknown) => unknown) => (action: unknown) => {
+      const typedAction = action as AnyAction;
       // Send Message action? Send data to the socket.
-      if (sendMessage.match(action)) {
+      if (sendMessage.match(typedAction)) {
         if (socket.readyState === socket.OPEN) {
-          socket.send(action.payload.message);
+          socket.send(typedAction.payload.message);
         } else {
           displayNotification({
             appearance: NotificationType.WARNING,
@@ -59,7 +62,7 @@ export const websocketConn =
         }
       }
 
-      return next(action);
+      return next(typedAction);
     };
   };
 

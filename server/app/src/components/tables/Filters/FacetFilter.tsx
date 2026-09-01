@@ -3,17 +3,17 @@ import {
   Button,
   Center,
   CloseButton,
-  createStyles,
   Group,
   Indicator,
   Popover,
   Text,
   TextInput
 } from "@mantine/core";
-import { Column, Table } from "@tanstack/react-table";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import type { Column, Table } from "@tanstack/react-table";
+import type { LegacyFeatures } from "@tanstack/react-table/legacy";
 import { CaretDown, MagnifyingGlass } from "phosphor-react";
-import { CSSProperties, useRef, useState } from "react";
+import { CSSProperties, useState } from "react";
+import { createStyles } from "../../../mantine/createStyles";
 import { useGetServersQuery } from "../../../state/api";
 
 const stringContains = (first: string, second: string): boolean => {
@@ -54,19 +54,19 @@ const useStyles = createStyles((theme) => {
   };
 });
 
-interface FacetFilterProps {
+interface FacetFilterProps<TData extends object, TValue extends string = string> {
   placeholder: string;
-  column: Column<any, string>;
-  table: Table<any>;
+  column: Column<LegacyFeatures, TData, TValue>;
+  table: Table<LegacyFeatures, TData>;
   Entry: React.FC<FacetEntryProps>;
 }
 
-export default function FacetFilter({
+export default function FacetFilter<TData extends object, TValue extends string = string>({
   placeholder,
   column,
   table,
   Entry
-}: FacetFilterProps) {
+}: FacetFilterProps<TData, TValue>) {
   const [filter, setFilter] = useState("");
   const [opened, setOpened] = useState(false);
 
@@ -74,15 +74,12 @@ export default function FacetFilter({
   const filteredOptions = options.filter((x) => stringContains(x, filter));
 
   const { classes, theme } = useStyles();
-  const listRef = useRef<HTMLDivElement>(null);
 
-  const rowVirtualizer = useVirtualizer({
-    count: filteredOptions.length,
-    getScrollElement: () => listRef.current,
-    estimateSize: () => 30,
-    overscan: 10
-  });
-
+  // Entries are rendered directly instead of through useVirtualizer. The
+  // list holds the distinct facet values of one column (dozens at most,
+  // capped at 200px), so virtualization buys nothing here, and the nested
+  // virtualizer never measured its scroll element inside the popover with
+  // react-virtual 3.14 (range stayed null, no items rendered).
   const filterValue = (column.getFilterValue() ?? []) as string[];
 
   const buttonColor =
@@ -109,17 +106,16 @@ export default function FacetFilter({
           variant="subtle"
           size="xs"
           className={classes.button}
-          compact
-          uppercase
+          tt="uppercase"
           color={buttonColor}
           onClick={() => setOpened((o) => !o)}
-          rightIcon={<CaretDown weight="bold" />}>
+          rightSection={<CaretDown weight="bold" />}>
           {placeholder}
         </Button>
       </Popover.Target>
       <Popover.Dropdown>
-        <Group position="apart" className={classes.header}>
-          <Text weight="normal" size="xs" color="dark">
+        <Group justify="space-between" className={classes.header}>
+          <Text fw="normal" size="xs" color="dark">
             Filter {placeholder}
           </Text>
           <CloseButton
@@ -131,7 +127,7 @@ export default function FacetFilter({
         </Group>
         <TextInput
           data-autofocus
-          icon={<MagnifyingGlass weight="bold" />}
+          leftSection={<MagnifyingGlass weight="bold" />}
           className={classes.search}
           variant="unstyled"
           value={filter}
@@ -143,7 +139,6 @@ export default function FacetFilter({
               <Button
                 style={{ marginRight: 25, fontWeight: "normal" }}
                 size="xs"
-                compact
                 variant="default"
                 color="brand"
                 disabled={filterValue.length === 0}
@@ -157,43 +152,25 @@ export default function FacetFilter({
           }
         />
 
-        <div ref={listRef} className={classes.container} data-autofocus>
-          <div
-            style={{
-              height: `${rowVirtualizer.getTotalSize()}px`,
-              width: "100%",
-              position: "relative"
-            }}>
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const selected = filterValue.includes(
-                filteredOptions[virtualRow.index]
-              );
-              return (
-                <Entry
-                  key={virtualRow.index}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    height: virtualRow.size,
-                    transform: `translateY(${virtualRow.start}px)`
-                  }}
-                  entry={filteredOptions[virtualRow.index]}
-                  selected={selected}
-                  onClick={(entry) =>
-                    selected
-                      ? column.setFilterValue(
-                          filterValue.filter(
-                            (x) => x !== filteredOptions[virtualRow.index]
-                          )
-                        )
-                      : column.setFilterValue([...filterValue, entry])
-                  }
-                />
-              );
-            })}
-          </div>
+        <div className={classes.container}>
+          {filteredOptions.map((option) => {
+            const selected = filterValue.includes(option);
+            return (
+              <Entry
+                key={option}
+                style={{ height: 30 }}
+                entry={option}
+                selected={selected}
+                onClick={(entry) =>
+                  selected
+                    ? column.setFilterValue(
+                        filterValue.filter((x) => x !== entry)
+                      )
+                    : column.setFilterValue([...filterValue, entry])
+                }
+              />
+            );
+          })}
 
           {filteredOptions.length === 0 && (
             <Center py="xs">
@@ -277,7 +254,7 @@ export function ServerFacetEntry({
       onClick={() => onClick(entry)}>
       <div className={cx({ [classes.indicator]: selected })}></div>
 
-      <Text size={12} weight="normal" color="dark" style={{ marginLeft: 20 }}>
+      <Text fz={12} fw="normal" color="dark" style={{ marginLeft: 20 }}>
         <Indicator
           position="middle-start"
           offset={-16}
@@ -295,7 +272,7 @@ export function StandardFacetEntry({
   onClick,
   selected,
   style
-}: FacetEntryProps): JSX.Element {
+}: FacetEntryProps) {
   const { classes, cx } = useFacetStyles();
   return (
     <Box
@@ -305,7 +282,7 @@ export function StandardFacetEntry({
       onClick={() => onClick(entry)}>
       <div className={cx({ [classes.indicator]: selected })}></div>
 
-      <Text size={12} weight="normal" color="dark">
+      <Text fz={12} fw="normal" color="dark">
         {entry}
       </Text>
     </Box>

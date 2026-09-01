@@ -1,4 +1,4 @@
-import { HTMLMotionProps } from "framer-motion";
+import { HTMLMotionProps } from "motion/react";
 
 export const defaultAnimation: HTMLMotionProps<"div"> = {
   layout: true,
