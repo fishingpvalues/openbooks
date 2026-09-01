@@ -36,6 +36,8 @@ func (server *server) registerRoutes() *chi.Mux {
 		r.Get("/library", server.getAllBooksHandler())
 		r.Delete("/library/{fileName}", server.deleteBooksHandler())
 		r.Get("/library/*", server.getBookHandler())
+		r.Get("/settings", server.settingsHandler())
+		r.Put("/settings", server.settingsHandler())
 	})
 
 	return router
@@ -145,12 +147,12 @@ func (server *server) getAllBooksHandler() http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !server.config.Persist {
+		if !server.settings.GetPersist() {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 
-		libraryDir := filepath.Join(server.config.DownloadDir, "books")
+		libraryDir := filepath.Join(server.settings.GetDownloadDir(), "books")
 		books, err := os.ReadDir(libraryDir)
 		if err != nil {
 			server.log.Printf("Unable to list books. %s\n", err)
@@ -184,17 +186,30 @@ func (server *server) getAllBooksHandler() http.HandlerFunc {
 func (server *server) getBookHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, fileName := path.Split(r.URL.Path)
-		bookPath := filepath.Join(server.config.DownloadDir, "books", fileName)
+		bookPath := filepath.Join(server.settings.GetDownloadDir(), "books", fileName)
 
 		http.ServeFile(w, r, bookPath)
 
-		if !server.config.Persist {
+		if !server.settings.GetPersist() {
 			err := os.Remove(bookPath)
 			if err != nil {
 				server.log.Printf("Error when deleting book file. %s", err)
 			}
 		}
 	}
+}
+
+// validBookName reports whether name is a single safe file name for a
+// book: one path segment, no separator, no traversal component, no
+// NUL, and not a dot file (the library list hides those).
+func validBookName(fileName string) bool {
+	if fileName == "" || fileName == "." || fileName == ".." {
+		return false
+	}
+	if strings.ContainsAny(fileName, "/\\") || strings.ContainsRune(fileName, 0) {
+		return false
+	}
+	return !strings.HasPrefix(fileName, ".")
 }
 
 // POTATOSTACK PATCH: arbitrary file deletion via the {fileName} parameter.
@@ -222,14 +237,13 @@ func (server *server) deleteBooksHandler() http.HandlerFunc {
 		// A book file name is one path segment. Anything carrying a separator,
 		// a traversal component or a NUL is a request for a file this endpoint
 		// does not own.
-		if fileName == "" || fileName == "." || fileName == ".." ||
-			strings.ContainsAny(fileName, `/\`) || strings.ContainsRune(fileName, 0) {
+		if !validBookName(fileName) {
 			server.log.Printf("Rejected book file name: %q\n", fileName)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
-		base := filepath.Join(server.config.DownloadDir, "books")
+		base := filepath.Join(server.settings.GetDownloadDir(), "books")
 		target := filepath.Join(base, fileName)
 
 		// Defence in depth: the checks above already exclude separators, so this

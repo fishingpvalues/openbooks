@@ -21,6 +21,10 @@ type server struct {
 	// Shared app configuration
 	config *Config
 
+	// Runtime settings (download dir, persist), changeable at runtime
+	// via the /settings endpoints.
+	settings *Settings
+
 	// Shared data
 	repository *Repository
 
@@ -59,14 +63,22 @@ type Config struct {
 }
 
 func New(config Config) *server {
-	return &server{
+	s := &server{
 		repository: NewRepository(),
 		config:     &config,
+		settings:   &Settings{},
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		clients:    make(map[uuid.UUID]*Client),
 		log:        log.New(os.Stdout, "SERVER: ", log.LstdFlags|log.Lmsgprefix),
 	}
+	// Seed the runtime settings from the startup config; the CLI
+	// ensures the dir exists and is writable before Start is called.
+	if err := s.settings.SetDownloadDir(config.DownloadDir); err != nil {
+		s.log.Fatalf("invalid download dir %s: %s", config.DownloadDir, err)
+	}
+	s.settings.SetPersist(config.Persist)
+	return s
 }
 
 // Start instantiates the web server and opens the browser
@@ -81,7 +93,7 @@ func Start(config Config) {
 		AllowCredentials: true,
 		AllowedOrigins:   []string{"http://127.0.0.1:5173"},
 		AllowedHeaders:   []string{"*"},
-		AllowedMethods:   []string{"GET", "DELETE"},
+		AllowedMethods:   []string{"GET", "PUT", "DELETE"},
 	}
 	router.Use(cors.New(corsConfig).Handler)
 
@@ -95,7 +107,7 @@ func Start(config Config) {
 
 	server.log.Printf("Base Path: %s\n", config.Basepath)
 	server.log.Printf("OpenBooks is listening on port %v", config.Port)
-	server.log.Printf("Download Directory: %s\n", config.DownloadDir)
+	server.log.Printf("Download Directory: %s\n", server.settings.GetDownloadDir())
 	server.log.Printf("Open http://localhost:%v%s in your browser.", config.Port, config.Basepath)
 	server.log.Fatal(http.ListenAndServe(":"+config.Port, router))
 }

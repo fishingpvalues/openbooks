@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/evan-buss/openbooks/server"
 	"github.com/evan-buss/openbooks/util"
@@ -34,8 +37,9 @@ var serverCmd = &cobra.Command{
 		bindGlobalServerFlags(&serverConfig)
 		rateLimit, _ := cmd.Flags().GetInt("rate-limit")
 		ensureValidRate(rateLimit, &serverConfig)
-		// If cli flag isn't set (default value) check for the presence of an
-		// environment variable and use it if found.
+		// Environment variables fill in values the CLI flags left at
+		// their defaults; an explicitly set flag always wins.
+		applyServerEnv(&serverConfig, cmd)
 		if serverConfig.Basepath == cmd.Flag("basepath").DefValue {
 			if envPath, present := os.LookupEnv("BASE_PATH"); present {
 				serverConfig.Basepath = envPath
@@ -51,4 +55,45 @@ var serverCmd = &cobra.Command{
 
 		server.Start(serverConfig)
 	},
+}
+
+// applyServerEnv maps environment variables onto the server config
+// for the values the CLI flags left at their defaults. A flag that
+// was explicitly set on the command line always wins over the
+// environment.
+//
+//	ENV           FLAG            DESCRIPTION
+//	PORT          --port          listen port (default 5228)
+//	DOWNLOAD_DIR  --dir           where eBooks are saved
+//	PERSIST       --persist       keep eBooks after sending (true/false)
+//	RATE_LIMIT    --rate-limit    seconds between searches (min 10)
+//	USER_AGENT    --useragent     version string reported to IRC
+//	BASE_PATH     --basepath      handled above, listed for completeness
+func applyServerEnv(config *server.Config, cmd *cobra.Command) {
+	if v, ok := os.LookupEnv("PORT"); ok && v != "" && !cmd.Flags().Changed("port") {
+		config.Port = v
+	}
+	if v, ok := os.LookupEnv("DOWNLOAD_DIR"); ok && v != "" && !cmd.Flags().Changed("dir") {
+		config.DownloadDir = v
+	}
+	if v, ok := os.LookupEnv("PERSIST"); ok {
+		switch strings.ToLower(v) {
+		case "true", "1", "yes":
+			config.Persist = true
+		case "false", "0", "no":
+			config.Persist = false
+		default:
+			fmt.Fprintf(os.Stderr, "ignoring invalid PERSIST=%q (want true or false)\n", v)
+		}
+	}
+	if v, ok := os.LookupEnv("RATE_LIMIT"); ok && v != "" && !cmd.Flags().Changed("rate-limit") {
+		if n, err := strconv.Atoi(v); err == nil {
+			ensureValidRate(n, config)
+		} else {
+			fmt.Fprintf(os.Stderr, "ignoring invalid RATE_LIMIT=%q (want an integer)\n", v)
+		}
+	}
+	if v, ok := os.LookupEnv("USER_AGENT"); ok && v != "" && !cmd.Flags().Changed("useragent") {
+		config.UserAgent = v
+	}
 }
