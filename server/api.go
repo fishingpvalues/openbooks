@@ -119,16 +119,16 @@ type apiState struct {
 	client    *Client
 	connected bool
 
+	// cancel tears the api session's context down. reapSession calls it so
+	// the old session's apiResultPump exits (its ctx is not the process
+	// ctx - a reaped session must not pin a goroutine). nil when no
+	// session is up.
+	cancel func()
+
 	lastSearch time.Time
 
 	// At most one search may be in flight; nil when none is.
 	pendingSearch chan searchOutcome
-
-	// reap is closed by the api session's IRC reader when the connection
-	// dies (startAPIClient wires it into core.StartReader). A reap() call
-	// outside the mutex is safe: it is just a no-op when the session is
-	// already down.
-	reap chan struct{}
 
 	// Recent book downloads: file name -> completion time. Lets a caller
 	// see whether a requested book has landed without diffing the library.
@@ -151,10 +151,7 @@ type downloadCallback struct {
 }
 
 func newAPIState() *apiState {
-	return &apiState{
-		downloads: make(map[string]time.Time),
-		reap:      make(chan struct{}),
-	}
+	return &apiState{downloads: make(map[string]time.Time)}
 }
 
 // reapSession marks the api IRC session dead (the deferred unregister sends
@@ -170,7 +167,12 @@ func (server *server) reapSession() {
 	state := server.api
 	state.mu.Lock()
 	state.connected = false
+	cancel := state.cancel
+	state.cancel = nil
 	state.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	server.log.Printf("api client: IRC session lost; will reconnect on the next search\n")
 }
 
@@ -231,32 +233,33 @@ func (server *server) startAPIClient() error {
 		return nil
 	}
 
+	// A cancellable session ctx: reapSession cancels it when the reader
+	// reports a dead connection, so apiResultPump (which blocks on the
+	// send channel) exits instead of leaking.
+	ctx, cancel := context.WithCancel(context.Background())
 	client := &Client{
 		uuid: apiClientID,
 		send: make(chan interface{}, 128),
 		irc:  irc.New(server.config.UserName, server.config.UserAgent),
 		log:  server.log,
-		ctx:  context.Background(),
+		ctx:  ctx,
 	}
 
 	if err := core.Join(client.irc, server.config.Server, server.config.EnableTLS); err != nil {
 		client.irc = nil
+		cancel()
 		return fmt.Errorf("api IRC connect: %w", err)
 	}
 
-	// The reader's death hook flips state.connected so the session can be
-	// re-established on demand; see reapSession.
-	select {
-	case <-state.reap:
-		// A previous session already died; arm a fresh channel.
-	}
-	state.reap = make(chan struct{})
+	// The reader's death hook (reapSession) flips state.connected, so the
+	// next startAPIClient re-establishes the session; see reapSession.
 	handler := server.NewIrcEventHandler(client)
 	go core.StartReader(context.Background(), client.irc, handler, server.reapSession)
 	go server.apiResultPump(client)
 
 	state.client = client
 	state.connected = true
+	state.cancel = cancel
 	recordAPIIRCSession()
 	server.register <- client
 	return nil

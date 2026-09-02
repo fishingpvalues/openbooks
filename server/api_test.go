@@ -618,6 +618,7 @@ func TestMetricsHandler(t *testing.T) {
 		`openbooks_searches_total [0-9]+`,
 		`openbooks_downloads_total [0-9]+`,
 		`openbooks_download_errors_total [0-9]+`,
+		`openbooks_http_requests_total{status=\"200\"} [0-9]+`,
 	} {
 		if m, _ := regexp.MatchString(pat, body); !m {
 			t.Errorf("metrics body missing a line matching %q", pat)

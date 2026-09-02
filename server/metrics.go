@@ -83,6 +83,16 @@ func (server *server) metricsHandler() http.HandlerFunc {
 		fmt.Fprintf(w, "# TYPE openbooks_callback_queue_size gauge\n")
 		fmt.Fprintf(w, "openbooks_callback_queue_size %d\n", callbacks)
 
+		// Seed the standard status set so the metric family is always
+		// present, even on a fresh server with no recorded statuses (an
+		// absent family reads as "metric missing" to a dashboard).
+		for _, c := range []int{200, 400, 401, 404, 409, 429, 502} {
+			code := fmt.Sprint(c)
+			if _, ok := statuses[code]; !ok {
+				statuses[code] = 0
+			}
+		}
+
 		keys := make([]string, 0, len(statuses))
 		for k := range statuses {
 			keys = append(keys, k)
