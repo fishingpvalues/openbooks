@@ -12,7 +12,8 @@ import (
 	"github.com/evan-buss/openbooks/util"
 
 	"github.com/spf13/cobra"
-)
+
+	"time")
 
 var openBrowser = false
 var serverConfig server.Config
@@ -112,4 +113,16 @@ func applyServerEnv(config *server.Config, cmd *cobra.Command) {
 	if v, ok := envValue("OPENBOOKS_USER_AGENT", "USER_AGENT"); ok && !cmd.Flags().Changed("useragent") {
 		config.UserAgent = v
 	}
+	// PotatoStack v5.2: the Wanted watchlist re-search interval. A value
+	// below the 1m floor is clamped by the poller; 0 = disable the
+	// poller (the REST endpoints still work, entries are not
+	// re-searched automatically).
+	if v, ok := envValue("OPENBOOKS_WANTED_POLL_INTERVAL", "WANTED_POLL_INTERVAL"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.WantedPollInterval = d
+		} else {
+			fmt.Fprintf(os.Stderr, "ignoring invalid WANTED_POLL_INTERVAL=%q (want a Go duration)\n", v)
+		}
+	}
 }
+

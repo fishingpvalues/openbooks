@@ -1,10 +1,68 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.1.1 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.2.0 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.2.0 (2026-09-02) - acquisition layer (research-driven)
+
+A feature-matrix audit of the comparable self-hosted book projects
+(`docs/openbooks/feature-matrix.md` in the potatostack repo, 2026-09-02:
+bookdl, calibre-web, Komga, Kavita, Booksonic, Shelfmark, ReadMeABook,
+Mylar3, COPS, CWA, Grimmory) ranked the adoptable gaps for a
+downloader-shaped service. v5.2.0 implements the downloader-relevant
+ones (it deliberately does NOT adopt the catalogue-shaped ones: no
+metadata DB, no web reader, no Subsonic - the matrix says those belong
+to the server, not the fetcher):
+
+- **Persistent Wanted watchlist.** `POST /api/v1/wanted`
+  `{query, author?, autoFetch?}` (201; duplicate 409, case-insensitive),
+  `GET /api/v1/wanted`, `DELETE /api/v1/wanted/{query}` (URL-escaped
+  segment; 204/404). A background poller re-searches ONE entry per tick
+  through the shared `performSearch` path (single-flight rule and the
+  10s rate limit apply; the poller never bypasses them) until the entry
+  matches; `autoFetch: true` entries fetch the first match through the
+  same `core.DownloadBook` path as a manual download, so completions
+  land in `/api/v1/downloads` and fire the callback webhooks in order.
+  State: in-memory + `<downloadDir>/wanted.json` snapshot (persist mode
+  only; follows the runtime download dir). Interval:
+  `OPENBOOKS_WANTED_POLL_INTERVAL` (Go duration; default 5m, floor 1m,
+  0 = poller off). This is the biggest gap vs Mylar3/Shelfmark/
+  ReadMeABook - they all have exactly this lifecycle.
+- **Atom feed.** `GET /api/v1/feeds/atom` - Atom 0.3, library contents
+  (persist mode, newest first) + recent completions, 100-entry cap,
+  absolute token-carrying entry links. No downloader-shaped comparable
+  project has an RSS/Atom feed; it is the zero-polling integration
+  point.
+- **OPDS 1.0 catalog.** `GET /opds[?search=term]` - the library tree as
+  an OPDS acquisition feed (500 cap, hidden/.temp excluded, per-ext
+  MIME on the links). `?search=` is the case-insensitive title filter
+  (the OPDS contract calibre-web/COPS/Kavita use). Entry links are
+  absolute with `?token=*** - OPDS clients cannot set Authorization
+  headers on content fetches (same exposure model as the Newznab `<api>`
+  element). 404 when persist is off.
+- **Unified multi-source search.** `POST /api/v1/search/unified`
+  `{query, sources?}` - IRC + Prowlarr in one request, normalized
+  results, per-source status (`ok`/`not-configured`/`rate-limited`/
+  `busy`/`bad-gateway`/`error`). One dead source never hides the
+  others' results; the IRC leg's 429/409 is a per-source status, not a
+  failed request.
+- **Prowlarr wire shape (caught live).** The first live run of the unified
+  search failed the Prowlarr leg's decode: `age` is an INT (whole days),
+  `indexerFlags` is a string array (`["freeleech"]`), and the endpoint is
+  Prowlarr's own `/api/v1/search` spelling - `magnetUrl` + a single
+  `protocol` string, not the Radarr `magnetUri`/`downloadProtocols`
+  names. `BookSearchResult` is now the measured wire shape (verified
+  against 646 live records) and golden-fixture tested
+  (`server/integrations/prowlarr_test.go`).
+- **Metrics.** `openbooks_wanted_entries`, `openbooks_wanted_unmatched`
+  (gauges); `openbooks_unified_searches_total`,
+  `openbooks_wanted_matches_total`, `openbooks_wanted_autofetches_total`
+  (counters).
+- Version: `5.2.0` (`cmd/openbooks/main.go`, `server/openapi.json` - now
+  16 paths / 14 schemas, the drift tests).
 
 ## v5.1.2 (2026-09-02) - liveness + observability
 
@@ -37,7 +95,7 @@ at `GET /openapi.json`.
 - **CI** (`.github/workflows/ci.yml`): `go vet` + `go test` on
   push/PR to `integrated`/`master`, plus a docker image build on push.
   The tag-based release workflows did not gate the line between tags.
-- Version: `5.1.2` (`cmd/openbooks/main.go`, `server/openapi.json`,
+- Version: `5.2.0` (`cmd/openbooks/main.go`, `server/openapi.json`,
   the drift tests).
 
 ## v5.1.1 (2026-09-02) - API hardening

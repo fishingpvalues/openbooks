@@ -829,6 +829,11 @@ func (server *server) registerRoutes() *chi.Mux {
 	// tracker's Newznab URL.
 	router.With(server.requireToken).Get("/torznab", server.torznabHandler())
 
+	// PotatoStack v5.2: the OPDS 1.0 catalog of the local library
+	// (ereader apps consume the downloaded tree directly). Token-gated
+	// like /torznab; ?search=term is the OPDS search contract.
+	router.With(server.requireToken).Get("/opds", server.opdsFeedHandler())
+
 	// REST API for the rest of the stack.
 	router.With(server.requireToken).Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", server.healthHandler())
@@ -843,6 +848,16 @@ func (server *server) registerRoutes() *chi.Mux {
 		r.Get("/downloads", server.downloadsHandler())
 		// Prometheus-format metrics for the stack's monitoring.
 		r.Get("/metrics", server.metricsHandler())
+		// PotatoStack v5.2: the persistent Wanted watchlist (POST adds a
+		// book to re-search on the poller interval; GET lists entries;
+		// DELETE removes one). See server/wanted.go.
+		r.Post("/wanted", server.wantedAddHandler())
+		r.Get("/wanted", server.wantedListHandler())
+		r.Delete("/wanted/{query}", server.wantedDeleteHandler())
+		// The Atom feed of library activity (new books + completions).
+		r.Get("/feeds/atom", server.atomFeedHandler())
+		// The unified multi-source search (IRC + Prowlarr).
+		r.Post("/search/unified", server.unifiedSearchHandler())
 		// Runtime-mutable settings (port of the fork's a65ef3d settings
 		// work). Changing the download dir at runtime rewrites where
 		// downloads land without a restart.

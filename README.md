@@ -4,7 +4,7 @@ openbooks is an IRC/DCC ebook downloader: it searches the #bookz channel on
 irc.irchighway.net via the channel search bot and downloads matched books
 over DCC transfers. A React web UI is served from the same process.
 
-This tree is the PotatoStack patched line, version 5.1.2, built as the
+This tree is the PotatoStack patched line, version 5.2.0, built as the
 openbooks:local image. Upstream base: evan-buss/openbooks at v4.5.0. The
 patch line adds:
 
@@ -20,6 +20,12 @@ patch line adds:
   /api/v1/metrics Prometheus text format, ircConnected on the health
   probe) and the api IRC session's self-healing re-establishment after
   a connection drop
+- the v5.2.0 acquisition layer: the persistent Wanted watchlist
+  (POST/GET/DELETE /api/v1/wanted with a re-search poller and
+  auto-fetch), the Atom feed of library activity (GET
+  /api/v1/feeds/atom), the OPDS 1.0 catalog of the local library (GET
+  /opds with ?search=), and the unified multi-source search (POST
+  /api/v1/search/unified over IRC + Prowlarr with per-source status)
 - runtime-mutable settings (GET/PUT /api/v1/settings)
 - an embedded OpenAPI document at GET /openapi.json
 - Go test suites
@@ -37,6 +43,10 @@ patch line adds:
 - Outbound clients: Prowlarr, Audiobookshelf, Calibre-Web, Readarr
 - Download-completion webhook (static and per-request)
 - Runtime-mutable settings (download directory, persist flag)
+- Persistent Wanted watchlist with re-search poller (auto-fetch)
+- Atom feed of library activity (GET /api/v1/feeds/atom)
+- OPDS 1.0 catalog of the local library (GET /opds, ?search=)
+- Unified multi-source search (POST /api/v1/search/unified)
 - Embedded OpenAPI 3.x document at /openapi.json
 - go 1.26.6 toolchain, hardened distroless Docker image
 - Book-completion polling (GET /api/v1/downloads) and Prometheus metrics (GET /api/v1/metrics)

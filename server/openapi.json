@@ -2,9 +2,9 @@
   "openapi": "3.0.3",
   "info": {
     "title": "OpenBooks API",
-    "version": "5.1.2",
+    "version": "5.2.0",
     "summary": "PotatoStack patched build of evan-buss/openbooks: IRC Highway eBook search and download, plus a REST API",
-    "description": "PotatoStack v5 of evan-buss/openbooks (upstream base v4.5.0). Adds bearer-token authentication on every API route, a REST API (/api/v1) on top of the websocket-only upstream app, path-traversal hardening on all library endpoints, loopback-only bind by default, TLS verification for IRC, and vulnerability fixes in the dependency tree. All /api/v1 and legacy endpoints require a token when the server was started with OPENBOOKS_TOKEN (Authorization: Bearer header, X-OpenBooks-Token header, or ?token= query parameter). Only the static SPA and this document are unauthenticated. v5.1.2 adds GET /api/v1/downloads (book completions recorded by the api session) and GET /api/v1/metrics (Prometheus text format), and the api IRC session now re-establishes itself after the reader detects a dead connection."
+    "description": "PotatoStack v5 of evan-buss/openbooks (upstream base v4.5.0). Adds bearer-token authentication on every API route, a REST API (/api/v1) on top of the websocket-only upstream app, path-traversal hardening on all library endpoints, loopback-only bind by default, TLS verification for IRC, and vulnerability fixes in the dependency tree. All /api/v1 and legacy endpoints require a token when the server was started with OPENBOOKS_TOKEN (Authorization: Bearer header, X-OpenBooks-Token header, or ?token= query parameter). Only the static SPA and this document are unauthenticated. v5.1.2 adds GET /api/v1/downloads (book completions recorded by the api session) and GET /api/v1/metrics (Prometheus text format), and the api IRC session now re-establishes itself after the reader detects a dead connection. v5.2.0 adds the persistent Wanted watchlist (POST/GET/DELETE /api/v1/wanted with a re-search poller), the Atom feed of library activity (GET /api/v1/feeds/atom), the OPDS 1.0 catalog of the local library (GET /opds, with ?search=), and the unified multi-source search (POST /api/v1/search/unified, IRC + Prowlarr with per-source status)."
   },
   "servers": [
     {
@@ -589,6 +589,245 @@
           }
         }
       }
+    },
+    "/api/v1/wanted": {
+      "post": {
+        "summary": "Add a book to the Wanted watchlist",
+        "description": "The re-search poller (OPENBOOKS_WANTED_POLL_INTERVAL, default 5m) sends one IRC search per tick until the entry matches. Duplicate queries (case-insensitive) are a 409. Token-gated like every /api/v1 route.",
+        "operationId": "wantedAdd",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "query"
+                ],
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "author": {
+                    "type": "string"
+                  },
+                  "autoFetch": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The entry was added.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WantedItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing/empty query."
+          },
+          "401": {
+            "description": "Missing or invalid token."
+          },
+          "409": {
+            "description": "A wanted entry with the same query already exists."
+          }
+        }
+      },
+      "get": {
+        "summary": "List the Wanted watchlist",
+        "operationId": "wantedList",
+        "responses": {
+          "200": {
+            "description": "The entries, oldest added first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WantedItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token."
+          }
+        }
+      }
+    },
+    "/api/v1/wanted/{query}": {
+      "delete": {
+        "summary": "Remove a book from the Wanted watchlist",
+        "operationId": "wantedDelete",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The query, URL-escaped (path-segment form)."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "401": {
+            "description": "Missing or invalid token."
+          },
+          "404": {
+            "description": "No wanted entry matches."
+          }
+        }
+      }
+    },
+    "/api/v1/feeds/atom": {
+      "get": {
+        "summary": "Atom feed of library activity",
+        "description": "Atom 0.3 feed: one entry per book the api session has seen - the current library contents (persist mode, newest first) plus the recent completions from GET /api/v1/downloads. Capped at 100 entries. No downloader-shaped comparable project ships such a feed; it is the zero-polling integration point for the rest of the stack.",
+        "operationId": "atomFeed",
+        "responses": {
+          "200": {
+            "description": "The feed.",
+            "content": {
+              "application/atom+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token."
+          }
+        }
+      }
+    },
+    "/api/v1/search/unified": {
+      "post": {
+        "summary": "Search all configured sources in one request",
+        "description": "Searches the IRC session and Prowlarr (both by default; restrict with sources) and returns one normalized result list with a per-source status. The IRC leg is subject to the shared 10s rate limit and single-flight rule: a 429/409 there is reported in the source status, not as a failed request.",
+        "operationId": "searchUnified",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "query"
+                ],
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "sources": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "irc",
+                        "prowlarr"
+                      ]
+                    },
+                    "description": "Omit/empty = all sources."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The normalized results and per-source statuses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "query",
+                    "results",
+                    "sources"
+                  ],
+                  "properties": {
+                    "query": {
+                      "type": "string"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UnifiedResult"
+                      }
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UnifiedSourceStatus"
+                      }
+                    },
+                    "took": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing query or unknown source name."
+          },
+          "401": {
+            "description": "Missing or invalid token."
+          }
+        }
+      }
+    },
+    "/opds": {
+      "get": {
+        "summary": "OPDS 1.0 catalog of the local library",
+        "description": "Serves the library directory tree as an OPDS 1.0 acquisition feed (newest first, 500-entry cap, hidden files and .temp excluded). ?search=term is a case-insensitive title filter (the OPDS search contract). Entry links are absolute and carry ?token=*** - OPDS clients cannot set Authorization headers on content fetches. 404 when persist mode is off.",
+        "operationId": "opdsCatalog",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Case-insensitive substring filter on the file name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The OPDS feed.",
+            "content": {
+              "application/atom+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token."
+          },
+          "404": {
+            "description": "Persist mode off, or the library is unavailable."
+          }
+        }
+      }
     }
   },
   "components": {
@@ -795,6 +1034,118 @@
             "format": "date-time"
           }
         }
+      },
+      "WantedItem": {
+        "type": "object",
+        "description": "One entry of the persistent Wanted watchlist. A wanted entry is re-searched through the shared api IRC session on the poller interval until it matches; autoFetch entries are fetched automatically on the first match.",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search term; unique case-insensitively."
+          },
+          "author": {
+            "type": "string",
+            "description": "Optional author enrichment."
+          },
+          "autoFetch": {
+            "type": "boolean",
+            "description": "Fetch the first match automatically."
+          },
+          "addedAt": {
+            "type": "string",
+            "description": "RFC3339 timestamp."
+          },
+          "fetchedAt": {
+            "type": "string",
+            "description": "Set when an auto-fetch was sent."
+          },
+          "matchedAt": {
+            "type": "string",
+            "description": "Set when the poller found results."
+          },
+          "matched": {
+            "type": "array",
+            "description": "The last search results the poller matched this entry against.",
+            "items": {
+              "$ref": "#/components/schemas/BookDetail"
+            }
+          }
+        },
+        "required": [
+          "query",
+          "addedAt"
+        ]
+      },
+      "UnifiedResult": {
+        "type": "object",
+        "description": "One normalized hit from any source. The Prowlarr leg is a release (url); the IRC leg is a DCC book identifier (bookId, fetched via POST /api/v1/download).",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "irc",
+              "prowlarr"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "bookId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "title"
+        ]
+      },
+      "UnifiedSourceStatus": {
+        "type": "object",
+        "description": "The per-source outcome of a unified search. One dead source never hides the others' results.",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "irc",
+              "prowlarr"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "not-configured",
+              "rate-limited",
+              "busy",
+              "bad-gateway",
+              "error"
+            ]
+          },
+          "note": {
+            "type": "string"
+          },
+          "hits": {
+            "type": "integer",
+            "description": "How many results this source contributed."
+          }
+        },
+        "required": [
+          "source",
+          "status",
+          "hits"
+        ]
       }
     }
   }

@@ -58,6 +58,10 @@ type server struct {
 	// webhook config. Built from the environment at start; every client is
 	// optional (empty base URL = disabled). See server/integrations/.
 	integrations *integrations.Bundle
+
+	// PotatoStack v5.2: the persistent Wanted watchlist plus its snapshot.
+	// See server/wanted.go.
+	apiWanted *wantedState
 }
 
 // Config contains settings for server
@@ -88,6 +92,12 @@ type Config struct {
 
 	// Version is reported by /api/v1/health.
 	Version string
+
+	// PotatoStack v5.2: the Wanted watchlist re-search interval.
+	// Zero (unset) means the poller runs at its minimum (1m); a negative
+	// value disables the poller entirely (the REST endpoints still work,
+	// the entries just are not re-searched automatically).
+	WantedPollInterval time.Duration
 }
 
 func New(config Config) *server {
@@ -101,6 +111,7 @@ func New(config Config) *server {
 		api:          newAPIState(),
 		settings:     &Settings{},
 		integrations: integrations.FromEnvBundle(),
+		apiWanted:    newWantedState(),
 	}
 	// Seed the runtime settings from the startup config; the CLI
 	// ensures the dir exists and is writable before Start is called.
@@ -155,8 +166,15 @@ func Start(config Config) {
 	server := New(config)
 	routes := server.registerRoutes()
 
+	// PotatoStack v5.2: the Wanted watchlist. The snapshot is restored
+	// now (the download dir is seeded in New), and the re-search poller
+	// runs on the same process context as the client hub - it ends with
+	// the process and leaves no goroutine behind.
+	server.loadWantedSnapshot()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go server.startClientHub(ctx)
+	go server.startWantedPoller(ctx, server.config.WantedPollInterval)
 	server.registerGracefulShutdown(cancel)
 	router.Mount(config.Basepath, routes)
 

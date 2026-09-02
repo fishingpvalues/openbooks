@@ -627,7 +627,7 @@ func TestOpenAPISpecDrift(t *testing.T) {
 	if err := json.Unmarshal(openapiSpec, &spec); err != nil {
 		t.Fatalf("embedded openapi.json does not parse: %v", err)
 	}
-	if spec.Info.Version != "5.1.2" {
+	if spec.Info.Version != "5.2.0" {
 		t.Errorf("openapi version = %q, want 5.1.2", spec.Info.Version)
 	}
 	for _, p := range []string{

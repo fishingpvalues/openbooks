@@ -1,3 +1,18 @@
+# [v5.2.0] - 2026-09-02
+
+## Added
+- The persistent **Wanted watchlist** - `POST /api/v1/wanted` `{query, author?, autoFetch?}` adds a book to re-search; `GET /api/v1/wanted` lists entries (oldest first); `DELETE /api/v1/wanted/{query}` removes one (URL-escaped path segment). Duplicate queries (case-insensitive) are a 409. A background poller (interval `OPENBOOKS_WANTED_POLL_INTERVAL`, Go duration, default 5m; 0 disables the poller while the REST endpoints keep working) sends ONE IRC search per tick through the shared `performSearch` path - same single-flight rule, same 10s rate limit, never bypassed - until the entry matches. `autoFetch: true` entries fetch the first match through the same `core.DownloadBook` path as a manual download, so completions land in `GET /api/v1/downloads` and fire the callback webhooks in order. The watchlist persists across restarts as `<downloadDir>/wanted.json` (persist mode only; follows the runtime download dir like the library does). The biggest gap vs the comparable downloader projects (Mylar3 watchlist, Shelfmark/ReadMeABook request queue) - `docs/openbooks/feature-matrix.md`.
+- `GET /api/v1/feeds/atom` - an Atom 0.3 feed of library activity: the current library contents (persist mode, newest first) plus the recent completions, 100-entry cap, entry links absolute and token-carrying. No downloader-shaped comparable project ships an RSS/Atom feed; it is the zero-polling integration point for DAGs, bots and (a future) Readarr.
+- `GET /opds` - the OPDS 1.0 catalog of the local library tree (newest first, 500-entry cap, hidden files and `.temp` excluded, per-extension MIME on the acquisition links). `?search=term` is the OPDS search contract (case-insensitive title filter). Token-gated; entry links are absolute with `?token=*** OPDS clients cannot set Authorization headers on content fetches (same exposure model as the Newznab `<api>` element).
+- `POST /api/v1/search/unified` `{query, sources?}` - searches the IRC session and Prowlarr in one request and returns a normalized result list with a per-source status (`ok` / `not-configured` / `rate-limited` / `busy` / `bad-gateway` / `error`). One dead source never hides the others' results; the IRC leg's 429/409 is reported in its status, not as a failed request.
+- Metrics: `openbooks_wanted_entries`, `openbooks_wanted_unmatched` (gauges), `openbooks_unified_searches_total`, `openbooks_wanted_matches_total`, `openbooks_wanted_autofetches_total` (counters).
+
+## Fixed
+- The Prowlarr search leg's wire shape, caught by the first live run of the unified search: `age` is an INT (whole days, not a string) and `indexerFlags` is a STRING array (`["freeleech"]`, not an object); the endpoint is Prowlarr's own `/api/v1/search` spelling (`magnetUrl`, single `protocol` string - not the Radarr `magnetUri`/`downloadProtocols` names). The struct is now the measured wire shape, pinned by a golden-fixture decode test (`server/integrations/prowlarr_test.go`).
+
+## Changed
+- The OpenAPI document now carries the v5.2.0 paths and schemas (`WantedItem`, `UnifiedResult`, `UnifiedSourceStatus`); `/api/v1/health` reports `5.2.0`.
+
 # [v5.1.2] - 2026-09-02
 
 ## Added

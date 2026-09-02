@@ -27,6 +27,9 @@ var (
 	apiDownloadCount  uint64
 	apiDownloadErrors uint64
 	apiIRCSessions    uint64
+	apiUnifiedSearches uint64
+	wantedMatches     uint64
+	wantedAutoFetches uint64
 )
 
 // metricsHandler is GET /api/v1/metrics.
@@ -48,6 +51,9 @@ func (server *server) metricsHandler() http.HandlerFunc {
 		d := atomic.LoadUint64(&apiDownloadCount)
 		de := atomic.LoadUint64(&apiDownloadErrors)
 		cs := atomic.LoadUint64(&apiIRCSessions)
+		us := atomic.LoadUint64(&apiUnifiedSearches)
+		wm := atomic.LoadUint64(&wantedMatches)
+		wf := atomic.LoadUint64(&wantedAutoFetches)
 		apiMetricsMu.Unlock()
 
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
@@ -82,6 +88,33 @@ func (server *server) metricsHandler() http.HandlerFunc {
 		fmt.Fprintf(w, "# HELP openbooks_callback_queue_size Queued download-completion webhooks\n")
 		fmt.Fprintf(w, "# TYPE openbooks_callback_queue_size gauge\n")
 		fmt.Fprintf(w, "openbooks_callback_queue_size %d\n", callbacks)
+
+		// PotatoStack v5.2: the Wanted watchlist and the unified search.
+		ws := server.apiWanted
+		ws.mu.Lock()
+		wantedCount := len(ws.items)
+		var wantedUnmatched int
+		for _, it := range ws.items {
+			if it.MatchedAt == "" {
+				wantedUnmatched++
+			}
+		}
+		ws.mu.Unlock()
+		fmt.Fprintf(w, "# HELP openbooks_wanted_entries Total wanted-watchlist entries\n")
+		fmt.Fprintf(w, "# TYPE openbooks_wanted_entries gauge\n")
+		fmt.Fprintf(w, "openbooks_wanted_entries %d\n", wantedCount)
+		fmt.Fprintf(w, "# HELP openbooks_wanted_unmatched Wanted entries with no match yet\n")
+		fmt.Fprintf(w, "# TYPE openbooks_wanted_unmatched gauge\n")
+		fmt.Fprintf(w, "openbooks_wanted_unmatched %d\n", wantedUnmatched)
+		fmt.Fprintf(w, "# HELP openbooks_unified_searches_total Unified multi-source searches served\n")
+		fmt.Fprintf(w, "# TYPE openbooks_unified_searches_total counter\n")
+		fmt.Fprintf(w, "openbooks_unified_searches_total %d\n", us)
+		fmt.Fprintf(w, "# HELP openbooks_wanted_matches_total Wanted entries the poller has matched\n")
+		fmt.Fprintf(w, "# TYPE openbooks_wanted_matches_total counter\n")
+		fmt.Fprintf(w, "openbooks_wanted_matches_total %d\n", wm)
+		fmt.Fprintf(w, "# HELP openbooks_wanted_autofetches_total Wanted entries the poller has auto-fetched\n")
+		fmt.Fprintf(w, "# TYPE openbooks_wanted_autofetches_total counter\n")
+		fmt.Fprintf(w, "openbooks_wanted_autofetches_total %d\n", wf)
 
 		// Seed the standard status set so the metric family is always
 		// present, even on a fresh server with no recorded statuses (an
@@ -123,6 +156,22 @@ func recordAPIDownloadError() {
 
 func recordAPIIRCSession() {
 	atomic.AddUint64(&apiIRCSessions, 1)
+}
+
+// recordUnifiedSearch counts one unified multi-source search request.
+func recordUnifiedSearch(sources int) {
+	_ = sources
+	atomic.AddUint64(&apiUnifiedSearches, 1)
+}
+
+// recordWantedMatched counts one wanted entry the poller matched.
+func recordWantedMatched() {
+	atomic.AddUint64(&wantedMatches, 1)
+}
+
+// recordWantedAutoFetch counts one wanted entry the poller fetched.
+func recordWantedAutoFetch() {
+	atomic.AddUint64(&wantedAutoFetches, 1)
 }
 
 // recordAPIStatus counts one /api/v1 response by its final status code.

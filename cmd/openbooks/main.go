@@ -20,12 +20,15 @@ import (
 // v5.1.1: Retry-After on the 429 rate limit (search + torznab), download
 // request validation before the IRC session, v5 delete name policy
 // aligned with the legacy handler, expanded /api/v1 test coverage.
+// v5.2.0: the persistent Wanted watchlist (POST/GET/DELETE /api/v1/wanted +
+// re-search poller), the Atom feed (GET /api/v1/feeds/atom), the OPDS catalog
+// (GET /opds), and the unified multi-source search (POST /api/v1/search/unified)
 // v5.1.2: GET /api/v1/downloads (book completions) and GET /api/v1/metrics
 // (Prometheus text format); the api IRC session re-establishes itself
 // after the reader detects a dead connection (previously the first search
 // after a VPN bounce silently timed out and every later search hit the
 // dead conn); /api/v1/health reports ircConnected.
-var version = "5.1.2"
+var version = "5.2.0"
 
 // We only increment ircVersion when irc admins require a fix to be made.
 // They can block / permit certain version numbers. ircVersion is the current permitted

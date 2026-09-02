@@ -32,24 +32,33 @@ func (c *ProwlarrClient) Enabled() bool { return c.baseURL != "" }
 // /api/v1/search returns every release across every indexer; a popular query
 // can return multi-MB of releases. We keep the fields an arr app (or a
 // caller) needs to act on a release and drop the rest.
+// BookSearchResult mirrors ONE record of live Prowlarr GET /api/v1/search.
+// The field names are the measured wire shape (2026-09-02: 646 records,
+// type=book) and NOT the Radarr/Sonarr spelling - Prowlarr's own search
+// endpoint differs: magnetUrl (not magnetUri), a single protocol string
+// (not downloadProtocols), and indexerFlags as a string array (e.g.
+// ["freeleech"]), not an object. The first live run of the v5.2.0
+// unified search failed the leg's decode on exactly these shapes, so this
+// struct is golden-fixture tested (TestBookSearchResultWireShape).
 type BookSearchResult struct {
 	Indexer           string   `json:"indexer"`
 	IndexerID         int      `json:"indexerId,omitempty"`
-	IndexerName       string   `json:"indexerName,omitempty"`
 	Title             string   `json:"title"`
 	SeasonEpisodeInfo string   `json:"seasonEpisodeInfo,omitempty"`
-	Information       string   `json:"information,omitempty"`
-	MagnetURI         string   `json:"magnetUri,omitempty"`
+	MagnetURL         string   `json:"magnetUrl,omitempty"`
 	DownloadURL       string   `json:"downloadUrl,omitempty"`
-	DownloadProtocols []string `json:"downloadProtocols,omitempty"`
+	Protocol          string   `json:"protocol,omitempty"`
 	Size              int64    `json:"size"`
-	IndexerFlags      []struct {
-		Anonymous bool `json:"anonymous"`
-	} `json:"indexerFlags,omitempty"`
-	PublishDate string  `json:"publishDate,omitempty"`
+	IndexerFlags      []string `json:"indexerFlags,omitempty"`
+	PublishDate       string   `json:"publishDate,omitempty"`
 	AgeHours    float64 `json:"ageHours,omitempty"`
 	AgeDays     float64 `json:"ageDays,omitempty"`
-	Age         string  `json:"age,omitempty"`
+	// Age is whole days, an INT on the wire (verified against live
+	// Prowlarr /api/v1/search 2026-09-02: 1095 for a 2023-09
+	// release, consistent with ageHours=26280). A string here
+	// fails the whole search leg's decode - the first live run of
+	// the v5.2.0 unified search caught it.
+	Age         int     `json:"age,omitempty"`
 	GUID        string  `json:"guid,omitempty"`
 }
 
