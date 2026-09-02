@@ -38,7 +38,9 @@ func StartInteractive(config Config) {
 		defer file.Close()
 	}
 
-	go core.StartReader(ctx, config.irc, handler)
+	// nil death hook: the CLI is a short-lived process, nothing needs
+	// to be told when the session dies (it exits with the process).
+	go core.StartReader(ctx, config.irc, handler, nil)
 	terminalMenu(config)
 
 	<-ctx.Done()
@@ -62,7 +64,9 @@ func StartDownload(config Config, download string) {
 	}
 
 	fmt.Printf("Sending download request.")
-	go core.StartReader(ctx, config.irc, handler)
+	// nil death hook: the CLI is a short-lived process, nothing needs
+	// to be told when the session dies (it exits with the process).
+	go core.StartReader(ctx, config.irc, handler, nil)
 	core.DownloadBook(config.irc, download)
 	fmt.Printf("%sSent download request.", clearLine)
 	fmt.Printf("Waiting for file response.")
@@ -94,7 +98,9 @@ func StartSearch(config Config, query string) {
 	warnIfServerOffline(query)
 	time.Sleep(time.Until(nextSearchTime))
 
-	go core.StartReader(ctx, config.irc, handler)
+	// nil death hook: the CLI is a short-lived process, nothing needs
+	// to be told when the session dies (it exits with the process).
+	go core.StartReader(ctx, config.irc, handler, nil)
 	core.SearchBook(config.irc, config.SearchBot, query)
 
 	setLastSearchTime()

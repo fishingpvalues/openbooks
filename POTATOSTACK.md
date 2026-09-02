@@ -1,0 +1,203 @@
+# openbooks:local - PotatoStack patch notes
+
+This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
+source at tag **v4.5.0** plus the **PotatoStack v5.1.1 patch line**, built as
+`openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
+docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
+at `GET /openapi.json`.
+
+## v5.1.2 (2026-09-02) - liveness + observability
+
+- **The api IRC session self-heals.** `startAPIClient` (`server/api.go`)
+  now passes a death hook to `core.StartReader` (new `onDeath` parameter,
+  `core/reader.go`): when the api session's connection drops - a gluetun
+  netns flap, an irchighway server drop - `reapSession` flips
+  `state.connected` and the next search re-establishes the session.
+  Before this the flag stayed `true` over the dead conn: the first search
+  after a drop burned the full 120s wait and every later search hit the
+  dead conn, while every HTTP healthcheck still passed. Same failure shape
+  as the v4.5.0 join race, in steady state - and invisible from the
+  outside, which is why it sat unnoticed.
+- **`GET /api/v1/health` reports `ircConnected`.** Process alive (the
+  HTTP probe) and session up (the IRC connection) are now two signals,
+  because they diverge: the process starts before any session exists, and
+  the session can die under a live process.
+- **`GET /api/v1/downloads`** - the completions the api session has
+  recorded (`{name, completedAt}`, oldest last). The polling path for
+  `POST /api/v1/download` callers without a `callbackUrl`; before this,
+  learning that a file landed required diffing `GET /api/v1/library`.
+  404 with a JSON error when persist mode is off.
+- **`GET /api/v1/metrics`** - Prometheus text format: `openbooks_up`,
+  `openbooks_version`, `openbooks_irc_connected`,
+  `openbooks_irc_sessions_total`, `openbooks_searches_total`,
+  `openbooks_downloads_total`, `openbooks_download_errors_total`,
+  `openbooks_downloads_completed`, `openbooks_callback_queue_size`,
+  `openbooks_http_requests_total{status}`. Hand-rolled (no client_golang):
+  the consumer is the standard prometheus text parser.
+- **CI** (`.github/workflows/ci.yml`): `go vet` + `go test` on
+  push/PR to `integrated`/`master`, plus a docker image build on push.
+  The tag-based release workflows did not gate the line between tags.
+- Version: `5.1.2` (`cmd/openbooks/main.go`, `server/openapi.json`,
+  the drift tests).
+
+## v5.1.1 (2026-09-02) - API hardening
+
+- **Retry-After on the 429 rate limit.** `POST /api/v1/search` (both wait
+  paths) and `GET /torznab` now return a `Retry-After` header with the
+  seconds to wait when rate-limited. Indexer tools (Prowlarr/Readarr) poll
+  the Newznab endpoint on a timer; before this they had to parse the
+  message body to learn the interval. `performSearch` / `sendSearchNow`
+  return the remaining seconds; the header is set in the handlers.
+  Documented on both 429 responses in `server/openapi.json`.
+- **Download validation before the IRC session.** `POST /api/v1/download`
+  validates `callbackUrl` (absolute http(s) URL) before `startAPIClient`,
+  so a malformed request is a 400 without a connection attempt. The
+  previous order (IRC first) meant a bad callback cost a failed IRC
+  connect and read as a 502.
+- **v5 delete name policy aligned with the legacy handler.**
+  `DELETE /api/v1/library/{name}` now rejects dotfiles and backslashes via
+  the shared `validBookName` check, the same policy the listing and the
+  legacy `DELETE /library/{name}` enforce. A dotfile is not a book the
+  API ever exposes.
+- **Test coverage for every /api/v1 handler.** New `server/api_test.go`:
+  health contract, public-route boundaries (SPA + openapi.json open,
+  everything else token-gated), the 401 contract (JSON body +
+  WWW-Authenticate), the v5 library list/file/delete handlers (including
+  traversal and dotfile regressions), search + download request
+  validation, `safeJoin`, the webhook retry-once path, and Retry-After on
+  the 429 (REST and torznab).
+
+## v5.1.0 patch line (2026-09-01) - integration layer
+
+Upstream openbooks has no integration surface: it cannot call the stack's
+services nor be called by them. v5.1.0 adds both. All peer config comes from
+`OPENBOOKS_*` env (empty = disabled), so a standalone `openbooks server`
+still works with no env at all.
+
+**Inbound** - openbooks as a *book indexer* for the *arr stack:
+- `GET <basepath>torznab` - Newznab endpoint (`t=caps`, `t=search`,
+  `t=book`). Prowlarr and Readarr can now add openbooks as a book indexer
+  the standard way (`?apikey=*** The caps document advertises the token
+  via the standard `<api key=...>` element. Search reuses
+  `performSearch` (`server/api.go`), so `/torznab` and `POST /api/v1/search`
+  share one IRC session, one rate limit, and the single in-flight rule.
+- `requireToken` / `tokenMatches` (`server/auth.go`) now accept the Newznab
+  `?apikey=*** query form alongside Bearer, `X-OpenBooks-Token`, and
+  `?token=*** constant-time compare, same as the other forms.
+- `POST /api/v1/download` accepts `callbackUrl`: when the book lands over
+  DCC, openbooks POSTs `{status,book,file}` there. FIFO queue in
+  `apiState.downloadCallbacks`, drained in `recordAPIDownload` (the api
+  IRC session handles book DCC transfers in request order); one retry,
+  dead webhooks are logged and dropped (no queue poisoning). Closes the
+  arr -> openbooks download-completion loop.
+
+**Outbound** - `server/integrations/` package, one client per peer, all
+behind one `Bundle` built in `server.New()`:
+- **Prowlarr** (`prowlarr.go`): `SearchBooks` (`GET /api/v1/search`,
+  `type=book` - Prowlarr is the indexer HUB, not a Torznab index:
+  `/api/torznab` is 404), `ListIndexers` (`GET /api/v1/indexer`).
+  `X-Api-Key`.
+- **Audiobookshelf** (`audiobookshelf.go`): `ListLibraries`,
+  `ScanLibrary`, `SearchLibraryItems`. Auth is `Authorization: Bearer ***
+  (NOT `x-api-key` - that returns 401; measured 2026-09-01).
+- **Calibre-Web** (`calibreweb.go`): `RootFeed`, `SearchOPDS`. CWA has no
+  REST API - OPDS atom feeds only (`/opds/`, `?searchTerm=`).
+- **Readarr** (`readarr.go`): `Lookup` (`GET /api/v1/book/lookup?title=`),
+  `HasBook` (`GET /api/v1/book`). Dormant on potatostack (Readarr not
+  deployed; `OPENBOOKS_READARR_URL` empty by default).
+- 30s per-call timeout + 8 MiB response cap in the shared `http.go`
+  plumbing; a misbehaving peer cannot hang or OOM a handler.
+
+**Observability** - `GET /api/v1/integrations` (token-gated): which peers
+are configured + `?probe=1` live reachability. Turns the bridge-IP
+fragility into something observable: after a peer container recreate moves
+its bridge IP, the probe for that peer reports unreachable until the
+`OPENBOOKS_*_URL` env is updated (see
+`docs/openbooks/stack-state-2026-09-01.md` section 6 for the measured
+addresses and why only bridge IPs work from the gluetun netns).
+
+**Tests:** `server/integrations_test.go` - Torznab caps/auth/search paths
+(under the real `requireToken` middleware), Newznab item XML round-trip,
+library download-URL derivation, integrations overview (disabled + live
+httptest peers), all four client contracts against httptest servers shaped
+like the live services, webhook FIFO pairing + dead-sink give-up.
+
+## v5.0.0 patch line (2026-09-01)
+
+On top of the original join-race patch below:
+
+- **Auth:** `server/auth.go` - bearer token (`OPENBOOKS_TOKEN` or `--token`)
+  guards every route except the static SPA and `GET /openapi.json`. Upstream
+  had none: the `OpenBooks` cookie was a client UUID, `/stats`, `/servers`
+  and the library endpoints were open to any tailnet peer (gluetun publishes
+  port 8083). Constant-time compare; token accepted via
+  `Authorization: Bearer`, `X-OpenBooks-Token` header or `?token=***
+  No token set = upstream single-user behavior.
+- **REST API:** `server/api.go` - `GET /api/v1/health`, `GET|DELETE
+  /api/v1/library[/{name...}]`, `POST /api/v1/search` (waits for parsed
+  results by default, 120s cap), `POST /api/v1/download` (async DCC request).
+  Search + download run in a server-owned IRC session (reserved uuid
+  `00000000-...-0001`) registered in the same clients map; `serveWs`'s
+  single-browser-connection rule excludes it, so UI and API coexist.
+- **OpenAPI:** `server/openapi.json` embedded (`//go:embed`, blank
+  `import _ "embed"` - the directive alone does not mark the import used,
+  types2 only counts `embed.X` references; this cost a whole debug session).
+- **Fixes:** `GET /library/*` subfolders + traversal guard (`safeJoin`);
+  `DELETE /library/{name}` arbitrary-file-deletion fix (chi routes on raw
+  percent-encoding; one segment only + `filepath.Rel` containment); archive
+  extraction hardened in `util/archiver.go` (entry path-traversal guard +
+  5GiB size cap - archiver/v3 + rardecode advisories GO-2024-2698,
+  GO-2025-3605, GO-2025-4020 have NO fixed release, so mitigated in code);
+  `irc/irc.go` TLS verification restored; `GET /stats` nil-conn guard for
+  the api client; `--bind` flag (default 127.0.0.1; image passes 0.0.0.0).
+- **Toolchain/deps:** go1.26.6 (16 reachable stdlib advisories from 1.26.0
+  cleared); `server/app` stray `npm@^12` runtime dep removed (5 vulnerable
+  npm-CLI sub-packages); Dockerfile non-root distroless + pinned bases +
+  `npm ci`; release workflows updated (go ^1.26.6, node 24).
+- **Frontend:** token in `localStorage["openbooks-token"]`, sent on REST +
+  WS; `/api/v1/health` probe gates the token prompt (no-token servers skip).
+
+Deploy config: `.env` `OPENBOOKS_TOKEN` (64-char hex, `openssl rand -hex 32`),
+compose `OPENBOOKS_TOKEN` passthrough, container command adds `--persist`
+`--bind 0.0.0.0`. Reach over `tailscale serve` only (rail: no 0.0.0.0
+publish on the host - the container bind is inside gluetun's namespace).
+
+## v4.5.0 base patch: IRC join race
+
+Upstream v4.5.0 joins the IRC channel after a **fixed 2 second sleep** after
+connect (`core/Join`). irchighway reverse-DNSes the connecting IP during
+registration; for a datacenter/VPN egress IP (no PTR record) that lookup
+**times out** (~5s+), so the JOIN is sent *before registration completes* and
+the server answers:
+
+```
+451 potatobooks JOIN :You have not registered
+451 potatobooks PRIVMSG :You have not registered
+```
+
+The client never retries, so it sits connected-but-not-joined and **every
+search silently fails** while the UI looks fine. From a residential IP the PTR
+lookup fails fast (NXDOMAIN), which is why most upstream users never see this.
+
+### The patch
+
+`core/irchighway.go` - `Join()` no longer sleeps 2s; it reads the connection
+byte-by-byte (no buffering, so the reader started after `Join()` still sees
+every remaining line) until the **001 welcome** (the definitive "you are
+registered" signal), answering PINGs on the way, with a 20s fallback that joins
+anyway. This fixes the race for any egress (VPN or not).
+
+## Rebuilding
+
+```bash
+docker compose --project-directory /opt/potatostack build openbooks
+docker compose --project-directory /opt/potatostack up -d openbooks
+```
+
+The build needs network (npm install for the web UI, go modules).
+
+## Reverting to upstream
+
+Switch the `openbooks` service image back to `evanbuss/openbooks:${OPENBOOKS_TAG}`
+and restore `OPENBOOKS_TAG` / the `# renovate: image=evanbuss/openbooks` comment
+in `.env.example` (only worth it once upstream fixes the join race AND auth).

@@ -16,6 +16,7 @@ package server
 // gets a 429 from the rate limit, same as the UI.
 
 import (
+	"bytes"
 	"context"
 	_ "embed" // directive-only use: //go:embed openapi.json, no embed.X referenced
 	"encoding/json"
@@ -25,6 +26,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,7 +47,6 @@ var apiClientID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 //go:embed openapi.json
 var openapiSpec []byte
 
-
 // BookFile is one entry of GET /api/v1/library.
 type BookFile struct {
 	Name         string    `json:"name"`
@@ -58,6 +60,15 @@ type HealthResponse struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Persist bool   `json:"persist"`
+
+	// IRCConnected reports whether the shared api IRC session is up. It
+	// is the signal that distinguishes "process alive" (the HTTP health
+	// itself) from "can actually search" - the process comes up before
+	// any IRC session exists, so a probe that only checked the HTTP
+	// status would call the server healthy while every search fails.
+	// The session re-establishes itself lazily on the next search
+	// (reapSession), so a false here is self-healing by design.
+	IRCConnected bool `json:"ircConnected"`
 }
 
 // APISearchRequest is the body of POST /api/v1/search.
@@ -83,6 +94,14 @@ type APISearchResponse struct {
 type APIDownloadRequest struct {
 	// Book is the "!"-prefixed identifier from the search results.
 	Book string `json:"book"`
+
+	// CallbackURL, when set, is called (POST, JSON body) once the book has
+	// landed in the library. This is the *arr-style completion hook:
+	// Readarr/Prowlarr register a callback and learn of completion without
+	// polling. It is independent of the static OPENBOOKS_DOWNLOAD_CALLBACK
+	// webhook (that one fires for every download; this one is per-request
+	// and only when the caller passes it).
+	CallbackURL string `json:"callbackUrl,omitempty"`
 }
 
 // searchOutcome is what the api event handlers deliver for one search.
@@ -105,13 +124,54 @@ type apiState struct {
 	// At most one search may be in flight; nil when none is.
 	pendingSearch chan searchOutcome
 
+	// reap is closed by the api session's IRC reader when the connection
+	// dies (startAPIClient wires it into core.StartReader). A reap() call
+	// outside the mutex is safe: it is just a no-op when the session is
+	// already down.
+	reap chan struct{}
+
 	// Recent book downloads: file name -> completion time. Lets a caller
 	// see whether a requested book has landed without diffing the library.
 	downloads map[string]time.Time
+
+	// downloadCallbacks is the FIFO of completion webhooks queued by
+	// POST /api/v1/download. The api IRC session is single-flight and
+	// processes book DCC transfers in request order, so completions
+	// (recordAPIDownload) drain the queue in order. At most one pending
+	// download per caller by design of the single api client.
+	downloadCallbacks []downloadCallback
+}
+
+// downloadCallback is one queued download-completion webhook.
+type downloadCallback struct {
+	// Book is the "!"-prefixed identifier the caller requested.
+	Book string
+	// URL is where the completion POST goes.
+	URL string
 }
 
 func newAPIState() *apiState {
-	return &apiState{downloads: make(map[string]time.Time)}
+	return &apiState{
+		downloads: make(map[string]time.Time),
+		reap:      make(chan struct{}),
+	}
+}
+
+// reapSession marks the api IRC session dead (the deferred unregister sends
+// block until process exit - the documented ws-path behavior) and lets the
+// next performSearch / startAPIClient bring up a fresh connection. This is
+// what keeps the REST API alive across a gluetun netns flap or an
+// irchighway server drop: without it the first search after the drop
+// silently times out (120s) and every later search hits the dead conn, so
+// openbooks reads as "up" to every healthcheck while every real search
+// fails - the exact failure shape of the v4.5.0 join race, now in steady
+// state.
+func (server *server) reapSession() {
+	state := server.api
+	state.mu.Lock()
+	state.connected = false
+	state.mu.Unlock()
+	server.log.Printf("api client: IRC session lost; will reconnect on the next search\n")
 }
 
 // libraryBase is the books dir every library endpoint acts on.
@@ -148,6 +208,11 @@ func safeJoin(base, name string) (string, bool) {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {
+	// Every v5 error response passes through here, which is where the
+	// metrics status counter belongs (one call site, every path). The
+	// handlers that set a status WITHOUT this helper (the 400 book-name
+	// checks, the 500 delete) count themselves.
+	recordAPIStatus(status)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	b, _ := json.Marshal(map[string]string{"error": message})
@@ -179,12 +244,20 @@ func (server *server) startAPIClient() error {
 		return fmt.Errorf("api IRC connect: %w", err)
 	}
 
+	// The reader's death hook flips state.connected so the session can be
+	// re-established on demand; see reapSession.
+	select {
+	case <-state.reap:
+		// A previous session already died; arm a fresh channel.
+	}
+	state.reap = make(chan struct{})
 	handler := server.NewIrcEventHandler(client)
-	go core.StartReader(context.Background(), client.irc, handler)
+	go core.StartReader(context.Background(), client.irc, handler, server.reapSession)
 	go server.apiResultPump(client)
 
 	state.client = client
 	state.connected = true
+	recordAPIIRCSession()
 	server.register <- client
 	return nil
 }
@@ -255,18 +328,84 @@ func (server *server) recordAPIDownload(name string) {
 	state := server.api
 	state.mu.Lock()
 	state.downloads[name] = time.Now()
+	// Drain the FIFO: this completion belongs to the oldest queued
+	// callback (book DCC transfers are handled in request order on the
+	// single api session).
+	cb := downloadCallback{}
+	if len(state.downloadCallbacks) > 0 {
+		cb = state.downloadCallbacks[0]
+		state.downloadCallbacks = state.downloadCallbacks[1:]
+	}
 	state.mu.Unlock()
+
 	server.log.Printf("api client: book download completed: %s\n", name)
+
+	if cb.URL == "" {
+		return
+	}
+	go server.fireDownloadCallback(cb, name)
+}
+
+// fireDownloadCallback POSTs the download-completion webhook. Best effort:
+// failures are logged (the caller can still poll GET /api/v1/library), with
+// one retry. Not retried forever - a dead webhook must not pin the queue.
+func (server *server) fireDownloadCallback(cb downloadCallback, fileName string) {
+	body, _ := json.Marshal(map[string]string{
+		"status": "completed",
+		"book":   cb.Book,
+		"file":   fileName,
+	})
+	// Re-validate rather than trusting the queued value: the guard is cheap and
+	// the entry has been sitting in a FIFO since the request.
+	target, err := validateCallbackURL(cb.URL)
+	if err != nil {
+		server.log.Printf("download callback: refusing %s: %v\n",
+			redactCallbackURL(cb.URL), err)
+		return
+	}
+	client := newCallbackClient(target)
+
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, cb.URL, bytes.NewReader(body))
+		if err != nil {
+			cancel()
+			server.log.Printf("download callback: invalid URL %s: %v\n", redactCallbackURL(cb.URL), err)
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			cancel()
+			lastErr = err
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+			continue
+		}
+		resp.Body.Close()
+		cancel()
+		if resp.StatusCode < 300 {
+			server.log.Printf("download callback: delivered %s -> %s\n", fileName, redactCallbackURL(cb.URL))
+			return
+		}
+		lastErr = fmt.Errorf("status %d", resp.StatusCode)
+	}
+	server.log.Printf("download callback: giving up on %s for %s: %v\n", fileName, redactCallbackURL(cb.URL), lastErr)
 }
 
 // healthHandler is GET /api/v1/health - the token probe the UI uses.
 func (server *server) healthHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		state := server.api
+		state.mu.Lock()
+		ircConnected := state.connected
+		state.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(HealthResponse{
-			Name:    "openbooks",
-			Version: server.config.Version,
-			Persist: server.settings.GetPersist(),
+			Name:         "openbooks",
+			Version:      server.config.Version,
+			Persist:      server.settings.GetPersist(),
+			IRCConnected: ircConnected,
 		})
 	}
 }
@@ -358,8 +497,10 @@ func (server *server) libraryDeleteHandler() http.HandlerFunc {
 			return
 		}
 
-		if fileName == "" || fileName == "." || fileName == ".." ||
-			strings.ContainsAny(fileName, `/\`) || strings.ContainsRune(fileName, 0) {
+		// Same name policy as the legacy delete handler (validBookName):
+		// one segment, no separators, no traversal, no dotfiles - a dotfile
+		// is not a book the listing ever exposes.
+		if !validBookName(fileName) {
 			server.log.Printf("Rejected book file name: %q\n", fileName)
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -384,8 +525,140 @@ func (server *server) libraryDeleteHandler() http.HandlerFunc {
 	}
 }
 
+// DownloadedBook is one entry of GET /api/v1/downloads.
+type DownloadedBook struct {
+	Name       string    `json:"name"`
+	CompletedAt time.Time `json:"completedAt"`
+}
+
+// downloadsHandler is GET /api/v1/downloads - the book completions the api
+// session has recorded, oldest last (the completion map is keyed by file
+// name, so there is no request ordering; the timestamps give the caller
+// the order). It exists because POST /api/v1/download returns the moment
+// the DCC request is *sent* and the file then takes minutes to arrive:
+// callers without a callbackUrl had to diff the library listing to learn
+// the file landed. 404 with a JSON error when persist mode is off, same
+// contract as GET /api/v1/library.
+func (server *server) downloadsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !server.settings.GetPersist() {
+			writeJSONError(w, http.StatusNotFound, "downloads are only available with --persist")
+			return
+		}
+
+		state := server.api
+		state.mu.Lock()
+		out := make([]DownloadedBook, 0, len(state.downloads))
+		for name, ts := range state.downloads {
+			out = append(out, DownloadedBook{Name: name, CompletedAt: ts})
+		}
+		state.mu.Unlock()
+
+		sort.Slice(out, func(i, j int) bool { return out[i].CompletedAt.Before(out[j].CompletedAt) })
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+// performSearch runs one IRC book search through the shared api session and
+// blocks (up to 120s) for the parsed result. It is the shared core of
+// POST /api/v1/search (searchHandler) and the inbound Newznab search
+// endpoint (torznab.go) so both enforce the same rate limit and single
+// in-flight-search rule. It does NOT write the HTTP response; callers own
+// that. On rate-limit it returns StatusTooManyRequests (with the seconds
+// remaining, for the Retry-After header); on a concurrent search,
+// StatusConflict; on IRC connect failure, StatusBadGateway.
+func (server *server) performSearch(query string) (APISearchResponse, int, int) {
+	state := server.api
+	if err := server.startAPIClient(); err != nil {
+		server.log.Printf("%s\n", err)
+		return APISearchResponse{}, http.StatusBadGateway, 0
+	}
+
+	state.mu.Lock()
+	nextAvailable := state.lastSearch.Add(server.config.SearchTimeout)
+	if time.Now().Before(nextAvailable) {
+		remaining := int(time.Until(nextAvailable).Seconds() + 0.5)
+		state.mu.Unlock()
+		return APISearchResponse{Note: fmt.Sprintf("rate limited, retry after %ds", remaining)}, http.StatusTooManyRequests, remaining
+	}
+	state.lastSearch = time.Now()
+
+	if state.pendingSearch != nil {
+		state.mu.Unlock()
+		return APISearchResponse{Note: "search already in flight, retry later"}, http.StatusConflict, 0
+	}
+	outcomeCh := make(chan searchOutcome, 1)
+	state.pendingSearch = outcomeCh
+	state.mu.Unlock()
+
+	// Arm the waiter BEFORE sending, so a fast result cannot be missed.
+	core.SearchBook(state.client.irc, server.config.SearchBot, query)
+	server.log.Printf("api search sent: %q\n", query)
+
+	var outcome searchOutcome
+	timedOut := false
+	select {
+	case outcome = <-outcomeCh:
+	case <-time.After(120 * time.Second):
+		timedOut = true
+		state.mu.Lock()
+		if state.pendingSearch == outcomeCh {
+			state.pendingSearch = nil
+		}
+		state.mu.Unlock()
+	}
+
+	resp := APISearchResponse{Waited: true}
+	if timedOut {
+		resp.Note = "timed out waiting for search results"
+	} else if outcome.Failed != "" {
+		resp.Note = outcome.Failed
+	} else {
+		resp.Books = outcome.Books
+		resp.Errors = outcome.Errs
+		if len(outcome.Books) == 0 {
+			resp.Note = "no results"
+		}
+	}
+	return resp, http.StatusOK, 0
+}
+
+// sendSearchNow fires a search at the IRC bot and returns immediately
+// (fire-and-forget). It enforces the same rate limit as performSearch but
+// does NOT arm a result waiter, so it never blocks on the result. This is
+// the wait=false path of POST /api/v1/search. It returns the HTTP status
+// and, for a 429, the seconds to wait (Retry-After).
+func (server *server) sendSearchNow(query string) (int, int) {
+	state := server.api
+	if err := server.startAPIClient(); err != nil {
+		server.log.Printf("%s\n", err)
+		return http.StatusBadGateway, 0
+	}
+
+	state.mu.Lock()
+	nextAvailable := state.lastSearch.Add(server.config.SearchTimeout)
+	if time.Now().Before(nextAvailable) {
+		remaining := int(time.Until(nextAvailable).Seconds() + 0.5)
+		state.mu.Unlock()
+		return http.StatusTooManyRequests, remaining
+	}
+	state.lastSearch = time.Now()
+	if state.pendingSearch != nil {
+		state.mu.Unlock()
+		return http.StatusConflict, 0
+	}
+	state.mu.Unlock()
+
+	// No waiter is armed (pendingSearch left nil), so the outcome is
+	// dropped if nobody is waiting - that is the fire-and-forget contract.
+	core.SearchBook(state.client.irc, server.config.SearchBot, query)
+	server.log.Printf("api search sent (async): %s\n", query)
+	return http.StatusOK, 0
+}
+
 // searchHandler is POST /api/v1/search - send a query to the IRC search bot
-// and (by default) wait for the parsed results.
+// and (by default) wait for the parsed results. wait=false is fire-and-forget.
 func (server *server) searchHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req APISearchRequest
@@ -397,80 +670,49 @@ func (server *server) searchHandler() http.HandlerFunc {
 		}
 		query := strings.TrimSpace(req.Query)
 		if query == "" {
+			recordAPIStatus(http.StatusBadRequest)
 			writeJSONError(w, http.StatusBadRequest, "query is required")
 			return
 		}
+
+		// One accepted search attempt (both wait paths); the 429/409/502
+		// below is also counted by recordAPIStatus in each branch.
+		recordAPISearch()
 
 		wait := true
 		if req.Wait != nil {
 			wait = *req.Wait
 		}
 
-		state := server.api
-		if err := server.startAPIClient(); err != nil {
-			server.log.Printf("%s\n", err)
-			writeJSONError(w, http.StatusBadGateway, "unable to connect to IRC server")
-			return
-		}
-
-		state.mu.Lock()
-		nextAvailable := state.lastSearch.Add(server.config.SearchTimeout)
-		if time.Now().Before(nextAvailable) {
-			remaining := int(time.Until(nextAvailable).Seconds() + 0.5)
-			state.mu.Unlock()
-			writeJSONError(w, http.StatusTooManyRequests,
-				fmt.Sprintf("rate limited, retry after %ds", remaining))
-			return
-		}
-		state.lastSearch = time.Now()
-
-		var outcomeCh chan searchOutcome
-		if wait {
-			if state.pendingSearch != nil {
-				state.mu.Unlock()
-				writeJSONError(w, http.StatusConflict, "search already in flight, retry later")
+		if !wait {
+			status, retryAfter := server.sendSearchNow(query)
+			if status != http.StatusOK {
+				if retryAfter > 0 {
+					w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				}
+				recordAPIStatus(status)
+				writeJSONError(w, status, "search not sent")
 				return
 			}
-			outcomeCh = make(chan searchOutcome, 1)
-			state.pendingSearch = outcomeCh
-		}
-		state.mu.Unlock()
-
-		// Arm the waiter BEFORE sending, so a fast result cannot be missed.
-		core.SearchBook(state.client.irc, server.config.SearchBot, query)
-		server.log.Printf("api search sent: %q\n", query)
-
-		if !wait {
+			recordAPIStatus(http.StatusOK)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(APISearchResponse{Waited: false, Note: "search sent"})
 			return
 		}
 
-		var outcome searchOutcome
-		timedOut := false
-		select {
-		case outcome = <-outcomeCh:
-		case <-time.After(120 * time.Second):
-			timedOut = true
-			state.mu.Lock()
-			if state.pendingSearch == outcomeCh {
-				state.pendingSearch = nil
+		resp, status, retryAfter := server.performSearch(query)
+		if status == http.StatusConflict || status == http.StatusTooManyRequests ||
+			status == http.StatusBadGateway {
+			if retryAfter > 0 {
+				// HTTP-standard backoff hint; Prowlarr/Readarr honor it when
+				// polling the Newznab endpoint.
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			}
-			state.mu.Unlock()
+			recordAPIStatus(status)
+			writeJSONError(w, status, resp.Note)
+			return
 		}
-
-		resp := APISearchResponse{Waited: true}
-		if timedOut {
-			resp.Note = "timed out waiting for search results"
-		} else if outcome.Failed != "" {
-			resp.Note = outcome.Failed
-		} else {
-			resp.Books = outcome.Books
-			resp.Errors = outcome.Errs
-			if len(outcome.Books) == 0 {
-				resp.Note = "no results"
-			}
-		}
+		recordAPIStatus(http.StatusOK)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	}
@@ -484,30 +726,70 @@ func (server *server) downloadHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req APIDownloadRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			recordAPIStatus(http.StatusBadRequest)
 			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
 		if !strings.HasPrefix(strings.TrimSpace(req.Book), "!") {
+			recordAPIDownloadError()
+			recordAPIStatus(http.StatusBadRequest)
 			writeJSONError(w, http.StatusBadRequest,
 				"book must be the !-prefixed identifier from search results")
 			return
 		}
 
+		// Validate the completion webhook before opening the IRC session:
+		// a bad URL must be a 400 even when the IRC server is unreachable,
+		// and there is no reason to establish a connection for a request
+		// that is about to be rejected. validateCallbackURL (callback_guard.go)
+		// is the full SSRF policy; the dial-time check in newCallbackClient
+		// is the one that actually holds, because a hostname's answer can
+		// change between here and the POST.
+		var callbackURL string
+		if cb := strings.TrimSpace(req.CallbackURL); cb != "" {
+			u, err := validateCallbackURL(cb)
+			if err != nil {
+				recordAPIDownloadError()
+				recordAPIStatus(http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			callbackURL = u.String()
+		}
+
+		recordAPIDownload()
 		if err := server.startAPIClient(); err != nil {
 			server.log.Printf("%s\n", err)
+			recordAPIStatus(http.StatusBadGateway)
 			writeJSONError(w, http.StatusBadGateway, "unable to connect to IRC server")
 			return
 		}
 
 		state := server.api
+		recordAPIIRCSession()
 		core.DownloadBook(state.client.irc, req.Book)
 		server.log.Printf("api download requested: %s\n", req.Book)
 
+		// Queue the completion webhook (FIFO): the api IRC session handles
+		// book DCC transfers in request order, so recordAPIDownload
+		// delivers this to the oldest queued callback when the book lands.
+		// callbackURL is already validated above (pre-IRC).
+		if callbackURL != "" {
+			state.mu.Lock()
+			state.downloadCallbacks = append(state.downloadCallbacks,
+				downloadCallback{Book: req.Book, URL: callbackURL})
+			state.mu.Unlock()
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		resp := map[string]string{
 			"status": "requested",
 			"detail": "book requested over DCC; poll GET /api/v1/library until the file appears",
-		})
+		}
+		if req.CallbackURL != "" {
+			resp["callback"] = "a completion POST will be sent to callbackUrl when the book lands"
+		}
+		json.NewEncoder(w).Encode(resp)
 	}
 }
 
@@ -536,6 +818,14 @@ func (server *server) registerRoutes() *chi.Mux {
 		r.Get("/library/*", server.getBookHandler())
 	})
 
+	// Inbound Newznab: openbooks as a book indexer for the *arr stack.
+	// Prowlarr/Readarr point a book indexer here and search through the
+	// standard Newznab protocol (auth via ?apikey=*** like every other
+	// route). It is token-gated and sits next to the SPA, not under
+	// /api/v1, because indexer tools poll it exactly like they poll a
+	// tracker's Newznab URL.
+	router.With(server.requireToken).Get("/torznab", server.torznabHandler())
+
 	// REST API for the rest of the stack.
 	router.With(server.requireToken).Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", server.healthHandler())
@@ -545,11 +835,19 @@ func (server *server) registerRoutes() *chi.Mux {
 		r.Delete("/library/{name}", server.libraryDeleteHandler())
 		r.Post("/search", server.searchHandler())
 		r.Post("/download", server.downloadHandler())
+		// Book completions recorded by the api session (the polling path
+		// for callers without a callbackUrl).
+		r.Get("/downloads", server.downloadsHandler())
+		// Prometheus-format metrics for the stack's monitoring.
+		r.Get("/metrics", server.metricsHandler())
 		// Runtime-mutable settings (port of the fork's a65ef3d settings
 		// work). Changing the download dir at runtime rewrites where
 		// downloads land without a restart.
 		r.Get("/settings", server.settingsHandler())
 		r.Put("/settings", server.settingsHandler())
+		// Outbound peer integrations: which services are configured and
+		// (with ?probe=1) reachable.
+		r.Get("/integrations", server.integrationsOverviewHandler())
 	})
 
 	return router

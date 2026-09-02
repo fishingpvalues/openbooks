@@ -14,7 +14,18 @@ import (
 
 // version will always match the GitHub release versions.
 // v5.0.0: PotatoStack patched line (auth, REST API, security fixes).
-var version = "5.0.0"
+// v5.1.0: integration layer - Newznab /torznab indexer endpoint, peer
+// clients (Prowlarr / Audiobookshelf / Calibre-Web / Readarr), download-
+// completion webhook, /api/v1/integrations overview.
+// v5.1.1: Retry-After on the 429 rate limit (search + torznab), download
+// request validation before the IRC session, v5 delete name policy
+// aligned with the legacy handler, expanded /api/v1 test coverage.
+// v5.1.2: GET /api/v1/downloads (book completions) and GET /api/v1/metrics
+// (Prometheus text format); the api IRC session re-establishes itself
+// after the reader detects a dead connection (previously the first search
+// after a VPN bounce silently timed out and every later search hit the
+// dead conn); /api/v1/health reports ircConnected.
+var version = "5.1.2"
 
 // We only increment ircVersion when irc admins require a fix to be made.
 // They can block / permit certain version numbers. ircVersion is the current permitted

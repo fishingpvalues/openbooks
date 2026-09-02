@@ -15,6 +15,7 @@ import (
 var (
 	ErrNotFullyCopied  = errors.New("didn't copy entire file from the archive")
 	ErrBadArchiveEntry = errors.New("archive entry escapes the download directory (path traversal)")
+	ErrNameEscapesDir  = errors.New("untrusted file name escapes the target directory (path traversal)")
 )
 
 // archiveRoot is the directory a downloaded .temp file sits in. Every entry
@@ -24,9 +25,29 @@ func archiveRoot(archivePath string) string {
 	return filepath.Dir(archivePath)
 }
 
+// SafeJoin joins base and name and returns the joined path, or an error if
+// the result lands outside base. It is the guard for untrusted file names
+// (DCC download filenames, archive entry names) that must not escape a
+// target directory via ../ sequences. Exported because it is used outside
+// this package: core/file.go applies it to the DCC filename before writing.
+func SafeJoin(base, name string) (string, error) {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsRune(name, 0) {
+		return "", ErrNameEscapesDir
+	}
+
+	target := filepath.Join(base, name)
+
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ErrNameEscapesDir
+	}
+
+	return target, nil
+}
+
 // safeArchiveTarget resolves archivePath + entryName and refuses the result
 // if it lands outside the archive's own directory.
-//
 // archiver/v3 is unmaintained and the path-traversal issues it was reported
 // with (GO-2024-2698, GO-2025-3605) have no fixed release, so the guard lives
 // here, in the only call site that extracts downloaded archives: a crafted
@@ -64,6 +85,22 @@ func ExtractArchive(archivePath string) (string, error) {
 
 	var newPath string
 	err = w.Walk(archivePath, func(f archiver.File) error {
+		// Upstream fix #187 (post-v4.5.0, ad12382): extract only one file
+		// per archive. A multi-entry archive is not a book - delivering a
+		// stray first entry (or a half-merged pile of entries) is worse
+		// than delivering the archive itself. So on the second entry:
+		// remove the first entry's temp file, stop the walk without
+		// error, and fall through to delivering the archive unopened.
+		// ErrStopWalk is the archiver/v3 contract (honoured by zip, tar
+		// and rar walkers, verified in v3.5.1).
+		if newPath != "" {
+			if err := os.Remove(newPath); err != nil {
+				return err
+			}
+			newPath = ""
+			return archiver.ErrStopWalk
+		}
+
 		// target (not newPath) on purpose: safeArchiveTarget returns an
 		// error, so a plain `newPath, err :=` here would shadow the
 		// outer newPath and ExtractArchive would silently return the
@@ -108,7 +145,9 @@ func ExtractArchive(archivePath string) (string, error) {
 		return "", err
 	}
 
-	// If we extracted a file, send that file and remove the zip file
+	// If we extracted exactly one file, send that file and remove the zip
+	// file. Otherwise (empty archive, or a multi-entry archive per #187),
+	// send the archive itself.
 	if newPath != "" {
 		err := os.Remove(archivePath)
 		if err != nil {

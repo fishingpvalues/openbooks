@@ -1,0 +1,42 @@
+# CI for the patch line: the tag-based release.yml / docker_hub.yml only
+# fire on v*.*.* tags; this one keeps the line honest between tags - the
+# go tests are the gate (the stack has no other CI) and the docker build
+# proves the image stage (npm ci + tsc + vite + go build + distroless)
+# still assembles, which the go tests alone do not cover.
+name: ci
+on:
+  push:
+    branches:
+      - integrated
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+      - name: vet
+        run: CGO_ENABLED=0 go vet ./...
+      - name: test
+        # CGO_ENABLED=0: the release + docker images are built cgo-less, so
+        # the tests must be too or a cgo-only regression passes CI and
+        # breaks the image.
+        run: CGO_ENABLED=0 go test ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: |
+          docker build --tag openbooks:ci .
+          docker run --rm openbooks:ci ./openbooks --version

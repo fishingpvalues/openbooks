@@ -72,3 +72,71 @@ func writeTestZip(t *testing.T, path, name, content string) error {
 	}
 	return f.Close()
 }
+
+// writeMultiEntryTestZip builds a zip with the given (name, content) pairs.
+// Map iteration order is not deterministic, and it does not matter for the
+// tests: whichever entry the walk sees second triggers the stop path.
+func writeMultiEntryTestZip(t *testing.T, path string, entries map[string]string) error {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := zip.NewWriter(f)
+	for name, content := range entries {
+		h, err := w.Create(name)
+		if err != nil {
+			f.Close()
+			return err
+		}
+		if _, err := h.Write([]byte(content)); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := w.Close(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// TestExtractArchiveMultiEntryDeliversArchive is the regression test for
+// upstream fix #187 (ad12382, post-v4.5.0): a multi-entry archive must NOT
+// be partially extracted and delivered. The first entry's temp file has to
+// be cleaned up and the archive itself returned, unmodified.
+func TestExtractArchiveMultiEntryDeliversArchive(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "book.zip.temp")
+
+	if err := writeMultiEntryTestZip(t, archivePath, map[string]string{
+		"First entry.txt":  "one",
+		"Second entry.txt": "two",
+	}); err != nil {
+		t.Fatalf("writeMultiEntryTestZip: %v", err)
+	}
+
+	extracted, err := ExtractArchive(archivePath)
+	if err != nil {
+		t.Fatalf("ExtractArchive: %v", err)
+	}
+
+	// The archive itself is returned, still on disk, unmodified.
+	if filepath.Clean(extracted) != filepath.Clean(archivePath) {
+		t.Fatalf("ExtractArchive returned %q, want the archive %q", extracted, archivePath)
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("archive %q missing after multi-entry delivery", archivePath)
+	}
+
+	// No leftover .temp extraction artifacts in the directory.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != filepath.Base(archivePath) {
+			t.Fatalf("leftover extraction artifact in %q: %s", dir, e.Name())
+		}
+	}
+}

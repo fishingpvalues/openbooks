@@ -66,7 +66,9 @@ func (c *Client) startIrcConnection(server *server) {
 		handler[core.Message] = func(text string) { logger.Println(text) }
 	}
 
-	go core.StartReader(c.ctx, c.irc, handler)
+	// nil death hook: the websocket client owns its own reconnect
+	// (the browser reconnects the /ws), so nothing needs to be told.
+	go core.StartReader(c.ctx, c.irc, handler, nil)
 
 	c.send <- ConnectionResponse{
 		StatusResponse: StatusResponse{

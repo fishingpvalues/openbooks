@@ -1,233 +1,327 @@
-# openbooks (PotatoStack patched v5.0.0)
+# openbooks
 
-> Upstream: [evan-buss/openbooks](https://github.com/evan-buss/openbooks) at v4.5.0.
-> This tree is the **PotatoStack patched line** (v5.0.0): real authentication, a
-> REST API for the rest of the stack, fixed path-traversal and TLS issues, and
-> no known-vulnerable standard library. See [Patch notes](#patch-notes-potatostack-v500)
-> and [REST API](#rest-api-v500).
+openbooks is an IRC/DCC ebook downloader: it searches the #bookz channel on
+irc.irchighway.net via the channel search bot and downloads matched books
+over DCC transfers. A React web UI is served from the same process.
 
-> NOTE: Going forward only the latest release will be supported. If you encounter any issues, be sure you are using the latest version.
+This tree is the PotatoStack patched line, version 5.1.2, built as the
+openbooks:local image. Upstream base: evan-buss/openbooks at v4.5.0. The
+patch line adds:
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/evanbuss/openbooks.svg)](https://hub.docker.com/r/evanbuss/openbooks/)
+- static-token authentication for the whole HTTP surface
+- a REST API under /api/v1 backed by a server-owned IRC session
+- security fixes (path traversal in library download/delete, archive
+  extraction hardening, IRC TLS certificate pinning, IRC join race,
+  loopback bind default)
+- the v5.1.0 integration layer (inbound Newznab /torznab book-indexer
+  endpoint, outbound clients for Prowlarr/Audiobookshelf/Calibre-Web/
+  Readarr, download-completion webhook, /api/v1/integrations overview)
+- the v5.1.2 endpoints (GET /api/v1/downloads completions, GET
+  /api/v1/metrics Prometheus text format, ircConnected on the health
+  probe) and the api IRC session's self-healing re-establishment after
+  a connection drop
+- runtime-mutable settings (GET/PUT /api/v1/settings)
+- an embedded OpenAPI document at GET /openapi.json
+- Go test suites
+- a hardened Docker image
 
-Openbooks allows you to download ebooks from irc.irchighway.net quickly and easily.
+## Features
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./.github/home_v3_dark.png">
-  <img alt="openbooks screenshot" src="./.github/home_v3.png">
-</picture>
+- Search #bookz on irc.irchighway.net through the IRC search bot
+- Download books over DCC with automatic archive extraction
+- React web UI served by the same process
+- Static-token auth across the HTTP surface (constant-time compare)
+- REST API under /api/v1 on a server-owned IRC session
+- Library listing, download and delete with traversal protection
+- Newznab /torznab book-indexer endpoint (Prowlarr/Readarr)
+- Outbound clients: Prowlarr, Audiobookshelf, Calibre-Web, Readarr
+- Download-completion webhook (static and per-request)
+- Runtime-mutable settings (download directory, persist flag)
+- Embedded OpenAPI 3.x document at /openapi.json
+- go 1.26.6 toolchain, hardened distroless Docker image
+- Book-completion polling (GET /api/v1/downloads) and Prometheus metrics (GET /api/v1/metrics)
+- The api IRC session re-establishes itself after a connection drop
 
-## Patch notes (PotatoStack v5.0.0)
-
-Changes relative to upstream v4.5.0, newest first:
-
-- **Runtime settings + env config + test suite** (port of the fork's
-  `a65ef3d` settings work, reconciled with the v5 token auth). New
-  `server/settings.go`: `GET/PUT /api/v1/settings` changes the download
-  directory and the persist flag on a running instance. The new dir is
-  validated (absolute, not `/`, NUL-free) and its writability is *probed*
-  before it is switched in, so a rejected change never leaves downloads
-  pointed at a dead path. `cmd/openbooks` now seeds config from
-  `OPENBOOKS_PORT` / `OPENBOOKS_DIR` / `OPENBOOKS_PERSIST` /
-  `OPENBOOKS_RATE_LIMIT` / `OPENBOOKS_USER_AGENT` (short names accepted
-  too); an explicitly set flag always wins. A 10-case test suite covers
-  the traversal delete, name validation, list filtering, the token
-  middleware (all three token forms), single-user mode, and settings.
-  This also fixed a regression the v5 rewrite had introduced: with
-  `persist` off, book download links now serve the file *then* delete it
-  (upstream behavior) instead of 404ing.
-- **Authentication.** New `server/auth.go`: when `OPENBOOKS_TOKEN` (or
-  `--token`) is set, **every route except the static SPA and `GET /openapi.json`**
-  requires the token via `Authorization: Bearer ***`, the
-  `X-OpenBooks-Token` header, or `?token=*** (the only form a `<a download>`
-  link or a browser WebSocket can carry). Constant-time compare. With no token
-  set the server behaves exactly like upstream (single-user desktop mode).
-  Upstream had no auth at all: the `OpenBooks` cookie was a client-generated
-  UUID, and `/stats`, `/servers` and the library endpoints were open to anyone
-  who could reach the port.
-- **REST API.** New `server/api.go`: the whole search/download/library flow is
-  now also available as REST under `/api/v1` (see [below](#rest-api-v500)),
-  backed by a server-owned IRC session, so other services (DAGs, scripts,
-  curl) no longer need a websocket client or a browser.
-- **OpenAPI document.** `server/openapi.json` is embedded into the binary and
-  served at `GET /openapi.json` (public - it is documentation, not data).
-- **Path traversal fixed (library download).** `GET /library/{name...}` now
-  validates the whole wildcard capture against the books directory with
-  `safeJoin` instead of taking the last path segment. Subfolder books (the
-  bookdl/filebot pipeline organizes into subdirectories) now download;
-  `..%2F` sequences are rejected.
-- **Arbitrary file deletion fixed (library delete).** `DELETE /library/{name}`
-  used to `os.Remove` whatever `url.PathUnescape` produced from the single chi
-  param - chi routes on the raw percent-encoding, so `..%2F..%2Fx` unescaped to
-  a traversal *after* routing accepted it as one segment. Both error branches
-  also fell through without returning. Now: one path segment only, separators /
-  `.` / `..` / NUL rejected, plus a `filepath.Rel` containment check.
-- **Archive extraction hardened** (`util/archiver.go`). archiver/v3 is
-  unmaintained and its path-traversal advisories (GO-2024-2698, GO-2025-3605)
-  plus the rardecode RAR dictionary DoS (GO-2025-4020) have no fixed release.
-  `ExtractArchive` now resolves every archive entry against the download
-  directory and rejects entries that escape it (`safeArchiveTarget`), rejects
-  NUL/`.`/`..` names, and caps entry size at 5 GiB.
-- **Archive extraction regression fixed** (`util/archiver.go`). The v5
-  hardening above introduced a variable shadowing bug: the walk callback's
-  `newPath, err :=` re-declared `newPath` in the closure scope, so
-  `ExtractArchive` returned the `.zip` itself instead of the extracted text,
-  and valid searches reported "No results found". Regression-tested by
-  `TestExtractArchiveReturnsExtractedFile`.
-- **Search parser no longer drops real results** (`core/search_parser.go`).
-  The production parser (`parseLineV2`) hard-failed any line without a ` - `
-  author separator (and assumed the separator when slicing the title,
-  chopping 2 characters). Author-less and `::INFO::`-less lines now parse
-  with empty author / `N/A` size; live result count went from 95/100 to
-  99/100. `TestSpecialCases` (exact values) still passes.
-- **IRC TLS no longer skips verification.** Upstream `irc/irc.go` dialed
-  with TLS verification disabled. irchighway's backends serve self-signed
-  certs with no SAN/CN, so hostname verification is impossible there; v5
-  instead pins each backend's SHA-256 certificate fingerprint per host
-  (`irc/irc.go`) and refuses any cert outside the pinned set. Any other
-  `--server` gets strict verification. See `SECURITY.md`.
-- **Join-race fix (kept from the v4.5.0-based local build).** `core.Join` no
-  longer sleeps a fixed 2s after connect; it reads until the 001 welcome
-  (definitive "registered" signal), answering PINGs, with a 20s fallback.
-  Without this, VPN-egress connections joined before registration completed
-  and every search silently failed (`451 ... :You have not registered`).
-- **Bind address.** `--bind` (default `127.0.0.1`); the docker image passes
-  `0.0.0.0` explicitly. Upstream bound `:port`, publishing the UI (and,
-  pre-v5, the library) to every interface.
-- **Standard library.** Built with go1.26.6 (16 reachable stdlib advisories
-  from 1.26.0 cleared: crypto/tls, net/http, crypto/x509, net, os, net/url,
-  encoding/asn1, net/textproto, archive/tar).
-- **Docker image.** Non-root distroless runtime, pinned base images, `npm ci`
-  for reproducible frontend builds. The stray `npm` runtime dependency in
-  `server/app/package.json` (which dragged 5 vulnerable npm-CLI sub-packages
-  into the production tree) is removed.
-- **Frontend token support.** The React app stores a token in
-  `localStorage["openbooks-token"]`, sends it on every REST call and websocket
-  upgrade, and probes `/api/v1/health` on load: token set and healthy -> app;
-  401 -> token prompt. No-token servers skip the prompt (health succeeds).
-- **Rate limit / single-search semantics** carried over to the API: a second
-  search while one is in flight gets `429`/`409`, same as the UI.
-
-## Getting Started
+## Running
 
 ### Binary
 
-1. Download the latest release for your platform from the [releases page](https://github.com/evan-buss/openbooks/releases).
-2. Run the binary
-   - Linux users may have to run `chmod +x [binary name]` to make it executable
-3. `./openbooks --help`
-   - This will display all possible configuration values and introduce the two modes; CLI or Server.
-4. Server mode with authentication (recommended for anything reachable by more
-   than one person):
-   - `./openbooks server --token *** --bind 127.0.0.1`
+`openbooks --help` lists all flags. Two modes exist: CLI (terminal
+interface) and server (web application). Obtain the binary from the
+upstream releases page or build from source (see Development).
+
+Server mode:
+
+    ./openbooks server --name yournick --token SECRET
+
+With a token set, every route except the static SPA and /openapi.json
+requires it. Without a token the server runs in single-user mode (all
+routes open, upstream behavior).
 
 ### Docker
 
-- Basic config
-  - `docker run -p 8080:80 evanbuss/openbooks`
-- Config to persist all eBook files to disk
-  - `docker run -p 8080:80 -v /home/evan/Downloads/openbooks:/books evanbuss/openbooks --persist`
-- With an API token (recommended):
-  - `docker run -p 8080:80 -e OPENBOOKS_TOKEN=*** evanbuss/openbooks --persist`
+    docker run -d --name openbooks -p 8080:80 \
+        -v /path/to/books:/books \
+        -e OPENBOOKS_TOKEN=SECRET \
+        -e OPENBOOKS_PERSIST=true \
+        openbooks:local
 
-### Setting the Base Path
+Image layout: multi-stage build (node:24-alpine frontend with npm ci,
+golang:1.26.6-alpine build stage, gcr.io/distroless/static:nonroot runtime
+running as uid 1000:1000). EXPOSE 80, VOLUME /books, entrypoint:
 
-OpenBooks server doesn't have to be hosted at the root of your webserver. The basepath value allows you to host it behind a reverse proxy. The base path value must have opening and closing forward slashes (default "/").
+    ["./openbooks","server","--dir","/books","--port","80","--bind","0.0.0.0"]
 
-- Docker
-  - `docker run -p 8080:80 -e BASE_PATH=/openbooks/ evanbuss/openbooks`
-- Binary
-  - `./openbooks server --basepath /openbooks/`
+OPENBOOKS_TOKEN is read from the environment. There is no HEALTHCHECK by
+design: distroless has no shell or curl; container alerts come from
+elsewhere.
 
-## REST API (v5.0.0)
+### Base path
 
-Full machine-readable spec: `GET /openapi.json` on the server (public).
-Auth on every endpoint except that one: `Authorization: Bearer ***`,
-`X-OpenBooks-Token`, or `?token=***
+For reverse-proxy setups, --basepath (flag) or BASE_PATH (env) sets the
+mount point. The value must include leading and trailing slashes
+(default /):
+
+    ./openbooks server --basepath /openbooks/
+    docker run -p 8080:80 -e BASE_PATH=/openbooks/ openbooks:local
+
+## Configuration
+
+### Flags (openbooks server)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| --port, -p | 5228 | HTTP listen port |
+| --dir, -d | $TMPDIR/openbooks | download directory |
+| --persist, -P | false | keep downloaded files on disk |
+| --rate-limit, -r | 10 | seconds between searches (min 10) |
+| --bind | 127.0.0.1 | bind address (the image passes 0.0.0.0) |
+| --basepath | / | base path, including leading/trailing / |
+| --name, -n | - | IRC nick (required) |
+| --server, -s | irc.irchighway.net:6697 | IRC server |
+| --tls | true | use TLS for the IRC connection |
+| --searchbot | search | name of the IRC search bot |
+| --useragent, -u | OpenBooks <version> | user agent string |
+| --token | - | API token |
+| --browser, -b | - | browser for desktop mode |
+| --log, -l | false | enable logging |
+| --no-browser-downloads | false | disable browser downloads |
+
+### Environment variables
+
+Short names are accepted too; an explicitly set flag always wins.
+
+| Variable | Description |
+|----------|-------------|
+| OPENBOOKS_PORT / PORT | HTTP listen port |
+| OPENBOOKS_DIR / DOWNLOAD_DIR | download directory |
+| OPENBOOKS_PERSIST / PERSIST | true/false |
+| OPENBOOKS_RATE_LIMIT / RATE_LIMIT | seconds between searches |
+| OPENBOOKS_USER_AGENT / USER_AGENT | user agent string |
+| OPENBOOKS_TOKEN | API token |
+| BASE_PATH | base path |
+
+Integration env vars (empty = that peer disabled; standalone mode works
+with none set):
+
+| Variable | Description |
+|----------|-------------|
+| OPENBOOKS_PROWLARR_URL, OPENBOOKS_PROWLARR_API_KEY | Prowlarr |
+| OPENBOOKS_AUDIOBOOKSHELF_URL, OPENBOOKS_AUDIOBOOKSHELF_API_KEY | Audiobookshelf; auth is Authorization: Bearer, not x-api-key |
+| OPENBOOKS_CALIBREWEB_URL | Calibre-Web; OPDS only, no key |
+| OPENBOOKS_READARR_URL, OPENBOOKS_READARR_API_KEY | Readarr |
+| OPENBOOKS_DOWNLOAD_CALLBACK | static completion webhook fired for every download; independent of the per-request callbackUrl |
+| OPENBOOKS_CALLBACK_ALLOWED_HOSTS | comma-separated hostnames allowed as callback targets (see the download-completion webhook below); empty by default |
+
+## REST API
+
+Machine-readable spec: GET /openapi.json (public). Every other route
+requires the token (auth forms below).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET    | `/api/v1/health`        | name/version/persist; also the token probe |
-| GET    | `/api/v1/library`       | list persisted books (name, size, mtime, download link) |
-| GET    | `/api/v1/library/{path}`| download a book (subfolders allowed; traversal rejected) |
-| DELETE | `/api/v1/library/{name}`| delete one top-level book file |
-| POST   | `/api/v1/search`        | search `#bookz`; `{"query": "...", "wait": true}` returns results (120s cap) |
-| POST   | `/api/v1/download`      | `{"book": "!"}` (identifier from search) requests the DCC download |
-| GET    | `/api/v1/settings`      | current runtime settings (downloadDir, persist) |
-| PUT    | `/api/v1/settings`      | change downloadDir (absolute + writable, probed before switching) and/or persist, no restart |
+| GET | /api/v1/health | {name, version, persist, ircConnected}; the token probe the UI uses; ircConnected is the shared api IRC session's liveness (self-healing on the next search) |
+| GET | /api/v1/library | JSON array of persisted books {name, downloadLink, size, modifiedAt}; 404 when persist is off |
+| GET | /api/v1/library/{path...} | download a book file; subfolders allowed; percent-encoded traversal (..%2F) rejected with 400 |
+| DELETE | /api/v1/library/{name} | delete one top-level book file; 204 on success |
+| POST | /api/v1/search | {"query": "...", "wait": true\|false (default true)}; waits up to 120 s for parsed results |
+| POST | /api/v1/download | {"book": "!<identifier from search>", "callbackUrl": "https://..." (optional)}; 200 {status: requested} |
+| GET | /api/v1/settings | {downloadDir, persist} |
+| PUT | /api/v1/settings | change downloadDir and/or persist without restart; 405 for other methods |
+| GET | /api/v1/downloads | JSON array of completions {name, completedAt}, oldest last; 404 when persist is off; the polling path for downloads without a callbackUrl |
+| GET | /api/v1/metrics | Prometheus text format (openbooks_up, version, irc_connected, searches, downloads, http status counts) |
+| GET | /api/v1/integrations | which peer integrations are configured (prowlarr/audiobookshelf/calibreweb/readarr + downloadCallback); ?probe=1 adds live reachability |
+| GET | /torznab | Newznab book-indexer endpoint (t=caps, t=search); auth via ?apikey=<token> |
+| GET | /openapi.json | embedded OpenAPI 3.x document (public) |
 
-Search + download run in a server-owned IRC session, so the UI and the API can
-share one server. DCC downloads are asynchronous: after `POST /download`
-(200 `requested`), poll `GET /api/v1/library` until the file appears.
+Legacy browser endpoints (still token-gated, used by the React UI):
+GET /ws (websocket), GET /stats, GET /servers, GET /library,
+DELETE /library/{name}, GET /library/*.
 
-The legacy browser endpoints (`/ws`, `/stats`, `/servers`, `/library...`) are
-also behind the token and still work, so the web UI needs no separate client
-changes beyond the token prompt.
+### Auth forms
 
-## Usage
+The token is set via the OPENBOOKS_TOKEN env var or the --token flag.
+Accepted forms:
 
-For a complete list of features use the `--help` flags on all subcommands.
-For example `openbooks cli --help or openbooks cli download --help`. There are
-two modes; Server or CLI. In CLI mode you interact and download books through
-a terminal interface. In server mode the application runs as a web application
-that you can visit in your browser.
+- Authorization: Bearer <token>
+- X-OpenBooks-Token: <token> header
+- ?token=<token> query parameter
+- ?apikey=<token> (Newznab form)
 
-Double clicking the executable will open the UI in your browser. In the future it may use [webviews](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) to provide a "native-like" desktop application.
+Comparison is constant-time. No token set = single-user mode, all routes
+open (upstream behavior).
+
+### Search and download flow
+
+POST /api/v1/search waits up to 120 s for parsed results when wait is
+true. Errors: 429 on the rate limit (default 10 s between searches) and
+409 when a search is already in flight, both with the shared session
+state; 502 if the IRC connection fails. A 429 carries a Retry-After
+header with the seconds to wait, so indexer clients (Prowlarr/Readarr)
+can back off without parsing the body.
+
+POST /api/v1/download requests the DCC transfer and returns 200
+{status: requested}. The file arrives over DCC; poll GET /api/v1/library
+until it appears. Request validation (book identifier, callbackUrl)
+runs before the IRC session is opened, so a malformed request is a 400
+regardless of IRC availability.
+
+### Download-completion webhook
+
+When callbackUrl is given to POST /api/v1/download, a completion POST
+{status, book, file} is delivered to that URL when the file lands. One
+retry is attempted; dead sinks are logged and dropped.
+OPENBOOKS_DOWNLOAD_CALLBACK sets a static webhook fired for every
+download, independent of the per-request callbackUrl.
+
+The callbackUrl is caller-supplied and the server POSTs to it, so it is
+SSRF-guarded. The policy:
+
+- link-local, metadata (169.254.169.254), unspecified and multicast
+  targets are always denied.
+- loopback and private targets are allowed only if the hostname is in
+  OPENBOOKS_CALLBACK_ALLOWED_HOSTS.
+- public targets are allowed, unless an allowlist is set (in which case
+  only allowlisted hosts are).
+- userinfo credentials in the URL are rejected; logs carry
+  scheme+host+path only.
+
+The check runs at request time (a bad URL is a 400 before the IRC
+session opens) and again at DIAL time (net.Dialer.Control), after DNS
+resolution, so a hostname that resolves to a public address during
+validation cannot resolve to a denied address by the time the POST goes
+out. Redirects are not followed, so a 302 cannot walk a permitted host
+into a denied address.
+
+### Settings
+
+GET /api/v1/settings returns {downloadDir, persist}. PUT accepts the
+same shape and applies changes without restart. The new downloadDir
+must be absolute, must not be /, and is probed writable before the
+switch. Other methods return 405.
+
+## Newznab / torznab indexer
+
+GET /torznab is an inbound Newznab book-indexer endpoint. Point Prowlarr
+or Readarr at it with the apikey as the Newznab index key:
+
+    http://<host>:<port>/torznab?t=caps&apikey=<token>
+
+Authentication uses the Newznab form: ?apikey=<token>.
+
+- t=caps: capability document; advertises the token via the standard
+  <api key="..."> element.
+- t=search&q=<query>: Newznab XML search results.
+
+The endpoint shares the IRC session, rate limit and single-flight rule
+with POST /api/v1/search: a 429 carries Retry-After (the indexer client
+backs off on it), a 409 means a search is already in flight, and a 502
+means the IRC connection failed.
+
+## Peer integrations
+
+Outbound clients talk to up to four peers, each enabled by its env vars
+(empty = disabled):
+
+| Peer | Env vars | Notes |
+|------|----------|-------|
+| Prowlarr | OPENBOOKS_PROWLARR_URL, OPENBOOKS_PROWLARR_API_KEY | - |
+| Audiobookshelf | OPENBOOKS_AUDIOBOOKSHELF_URL, OPENBOOKS_AUDIOBOOKSHELF_API_KEY | auth is Authorization: Bearer, not x-api-key |
+| Calibre-Web | OPENBOOKS_CALIBREWEB_URL | OPDS only, no key |
+| Readarr | OPENBOOKS_READARR_URL, OPENBOOKS_READARR_API_KEY | - |
+
+GET /api/v1/integrations reports which peers are configured
+(prowlarr/audiobookshelf/calibreweb/readarr plus downloadCallback).
+?probe=1 adds live per-peer reachability (a transport ping; any HTTP
+status counts as reachable) and a functional apiProbe.
+
+## Security
+
+Changes in the patch line relative to upstream v4.5.0:
+
+- Authentication. Upstream had none: the OpenBooks cookie was a
+  client-generated UUID, and /stats, /servers and the library were open
+  to anyone who could reach the port. With a token set, every route
+  except the static SPA and /openapi.json requires it (constant-time
+  compare).
+- DELETE /library/{name} was arbitrary file deletion: chi routes on raw
+  percent-encoding, so ..%2F..%2Fx unescaped to a traversal after routing
+  accepted it as one segment. Now: one path segment only, plus a
+  containment check.
+- The download-completion callbackUrl was an open SSRF relay: the server
+  POSTs to a caller-supplied URL, so a token holder could reach every
+  service on the bridge, the host loopback and the metadata address.
+  It is now allowlist-guarded (OPENBOOKS_CALLBACK_ALLOWED_HOSTS),
+  re-checked at dial time after DNS resolution, and the client refuses
+  to follow redirects. See the download-completion webhook section.
+- GET /library/* now validates subfolder paths with safeJoin;
+  percent-encoded traversal is rejected with 400.
+- Archive extraction rejects entries escaping the download directory.
+  The archiver/v3 and rardecode advisories GO-2024-2698, GO-2025-3605
+  and GO-2025-4020 have no fixed release, so the mitigation is in code
+  (safeArchiveTarget), with a 5 GiB entry-size cap.
+- IRC TLS: upstream dialed with verification disabled. irchighway
+  backends serve self-signed certs with no SAN, so their SHA-256
+  fingerprints are pinned per host; any other server gets strict
+  verification.
+- IRC join race: the join no longer sleeps a fixed 2 s after connect;
+  it reads until the 001 welcome (the definitive registered signal),
+  answering PINGs, with a 20 s fallback. Previously, slow-egress
+  connections joined before registration and searches failed with 451
+  (You have not registered).
+- --bind defaults to 127.0.0.1; upstream bound every interface. The
+  Docker image passes 0.0.0.0 explicitly.
 
 ## Development
 
-### Install the dependencies
+Toolchain: go 1.26.6. Frontend lives in server/app
+(React/TypeScript/Redux/Mantine: npm ci, npm run build).
 
-- `go get`
-- `cd server/app && npm install`
-- `cd ../..`
-- `go run main.go`
+Build:
 
-### Build the React SPA and compile binaries for multiple platforms.
+    ./build.sh                # npm ci, build the React app, compile the binary
+    go build                  # binary only, when the frontend is unchanged
+    go build -tags webview    # desktop mode
 
-- Run `./build.sh`
-- This will install npm packages, build the React app, and compile the executable.
+Mock IRC/DCC server for development against a fake IRC:
 
-### Build the go binary (if you haven't changed the frontend)
+    cd cmd/mock_server && go run .
+    # in another terminal:
+    openbooks server --server localhost --log
 
-- `go build`
+Tests. Go unit tests in server/: routes_test.go (library handlers,
+traversal regressions, the token middleware in all forms, settings),
+integrations_test.go (torznab caps/auth/search paths, Newznab XML
+round-trip, integrations overview, all four peer client contracts
+against httptest servers shaped like the live services, webhook FIFO
+and dead-sink give-up, OpenAPI drift) and api_test.go (health, the v5
+library handlers, public-route boundaries, the 401 contract,
+search/download request validation, safeJoin, Retry-After on the 429),
+plus core/, dcc/, irc/, util/ tests.
 
-### Mock Development Server
+    go test ./...
 
-- The mock server allows you to debug responses and requests to simplified IRC / DCC
-  servers that mimic the responses received from IRC Highway.
-- ```bash
-  cd cmd/mock_server
-  go run .
-  # Another Terminal
-  cd cmd/openbooks
-  go run . server --server localhost --log
-  ```
+## License
 
-### Desktop App
-Compile OpenBooks with experimental webview support:
-
-``` shell
-cd cmd/openbooks
-go build -tags webview
-```
-
-
-## Why / How
-
-- I wrote this as an easier way to search and download books from irchighway.net. It handles all the extraction and data processing for you. You just have to click the book you want. Hopefully you find it much easier than the IRC interface.
-- It was also interesting to learn how the [IRC](https://en.wikipedia.org/wiki/Internet_Relay_Chat) and [DCC](https://en.wikipedia.org/wiki/Direct_Client-to-Client) protocols work and write custom implementations.
-
-## Technology
-
-- Backend
-  - Golang
-  - Chi
-  - gorilla/websocket
-  - Archiver (extract files from various archive formats)
-- Frontend
-  - React.js
-  - TypeScript
-  - Redux / Redux Toolkit
-  - Mantine UI / @emotion/react
-  - Framer Motion
+MIT (upstream). The patch line described here is PotatoStack's work on
+top of evan-buss/openbooks v4.5.0.

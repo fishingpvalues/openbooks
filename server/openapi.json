@@ -2,9 +2,9 @@
   "openapi": "3.0.3",
   "info": {
     "title": "OpenBooks API",
-    "version": "5.0.0",
+    "version": "5.1.2",
     "summary": "PotatoStack patched build of evan-buss/openbooks: IRC Highway eBook search and download, plus a REST API",
-    "description": "PotatoStack v5 of evan-buss/openbooks (upstream base v4.5.0). Adds bearer-token authentication on every API route, a REST API (/api/v1) on top of the websocket-only upstream app, path-traversal hardening on all library endpoints, loopback-only bind by default, TLS verification for IRC, and vulnerability fixes in the dependency tree. All /api/v1 and legacy endpoints require a token when the server was started with OPENBOOKS_TOKEN (Authorization: Bearer header, X-OpenBooks-Token header, or ?token= query parameter). Only the static SPA and this document are unauthenticated."
+    "description": "PotatoStack v5 of evan-buss/openbooks (upstream base v4.5.0). Adds bearer-token authentication on every API route, a REST API (/api/v1) on top of the websocket-only upstream app, path-traversal hardening on all library endpoints, loopback-only bind by default, TLS verification for IRC, and vulnerability fixes in the dependency tree. All /api/v1 and legacy endpoints require a token when the server was started with OPENBOOKS_TOKEN (Authorization: Bearer header, X-OpenBooks-Token header, or ?token= query parameter). Only the static SPA and this document are unauthenticated. v5.1.2 adds GET /api/v1/downloads (book completions recorded by the api session) and GET /api/v1/metrics (Prometheus text format), and the api IRC session now re-establishes itself after the reader detects a dead connection."
   },
   "servers": [
     {
@@ -29,6 +29,10 @@
     {
       "name": "irc",
       "description": "IRC Highway search and download"
+    },
+    {
+      "name": "integration",
+      "description": "Peer-service integration (inbound Newznab + outbound overview)"
     }
   ],
   "paths": {
@@ -266,7 +270,7 @@
             }
           },
           "429": {
-            "description": "Rate limited (search interval)",
+            "description": "Rate limited (search interval). The Retry-After header carries the seconds to wait before the next search.",
             "content": {
               "application/json": {
                 "schema": {
@@ -318,6 +322,10 @@
                     },
                     "detail": {
                       "type": "string"
+                    },
+                    "callback": {
+                      "type": "string",
+                      "description": "Present (informational) when a callbackUrl was accepted."
                     }
                   }
                 }
@@ -418,6 +426,169 @@
           }
         }
       }
+    },
+    "/torznab": {
+      "get": {
+        "tags": [
+          "integration"
+        ],
+        "summary": "Newznab search endpoint (openbooks as a book indexer)",
+        "description": "The standard Newznab protocol so Prowlarr and Readarr can add openbooks as a book indexer. Auth is the same token as the REST API, carried the Newznab way (?apikey=*** Bearer / X-OpenBooks-Token / ?token=*** also accepted. t=search reuses the same IRC session, rate limit and single in-flight rule as POST /api/v1/search. Download URLs in the items point at GET /api/v1/library/{name} - callers add ?token=*** to fetch the file.",
+        "parameters": [
+          {
+            "name": "t",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "caps",
+                "search",
+                "book",
+                "bookish"
+              ]
+            },
+            "description": "Request type (default search)"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Book title or author (required for t=search)"
+          },
+          {
+            "name": "apikey",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The openbooks token, Newznab form. Any of the accepted token forms works."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Caps document (t=caps) or Newznab <search> XML",
+            "content": {
+              "text/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing q (t=search) or unsupported t"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "A search is already in flight on the shared api session"
+          },
+          "429": {
+            "description": "Rate limited (shared with POST /api/v1/search). The Retry-After header carries the seconds to wait; Prowlarr/Readarr back off on it."
+          },
+          "502": {
+            "description": "Could not connect to the IRC server"
+          }
+        }
+      }
+    },
+    "/api/v1/integrations": {
+      "get": {
+        "tags": [
+          "integration"
+        ],
+        "summary": "Peer-service integration overview + reachability probes",
+        "description": "Reports which peer integrations (Prowlarr, Audiobookshelf, Calibre-Web, Readarr) are configured and whether a download-completion webhook is set. With ?probe=1 each configured peer is probed with a cheap GET and reported reachable/unreachable with a short reason. Use this after a peer container recreate: bridge IPs on 172.22.0.0/16 are dynamic and a recreate can move a peer's IP, in which case the probe reports unreachable until the OPENBOOKS_*_URL env value is updated.",
+        "parameters": [
+          {
+            "name": "probe",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            },
+            "description": "Run a live reachability probe against each configured peer"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Overview JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/downloads": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Book completions recorded by the api session, oldest last",
+        "description": "The completion map the api session fills as books land over DCC. The polling path for POST /api/v1/download callers without a callbackUrl: before v5.1.2 learning that a file landed required diffing GET /api/v1/library.",
+        "responses": {
+          "200": {
+            "description": "The completions (an empty array when none)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DownloadedBook"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Persist mode is off (same contract as /api/v1/library)"
+          }
+        }
+      }
+    },
+    "/api/v1/metrics": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Prometheus text-format metrics: openbooks_up, openbooks_version, openbooks_irc_connected, session/search/download counters, the completion gauge, the callback queue size, and openbooks_http_requests_total{status}",
+        "responses": {
+          "200": {
+            "description": "Prometheus text format (Content-Type: text/plain; version=0.0.4)",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "openbooks_up 1\nopenbooks_irc_connected 1\n"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -425,7 +596,7 @@
       "openbooksToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The OPENBOOKS_TOKEN value. Accepted as Authorization: Bearer, X-OpenBooks-Token header, or ?token= query parameter. When the server has no token configured (single-user desktop mode) no credential is needed."
+        "description": "The openbooks token, accepted as Authorization: Bearer *** X-OpenBooks-Token header, ?token=*** or the Newznab ?apikey=*** query form (indexer tools such as Prowlarr/Readarr append apikey to the indexer URL). Constant-time compare. No token configured = unauthenticated single-user mode (upstream behavior)."
       }
     },
     "responses": {
@@ -462,6 +633,10 @@
           },
           "persist": {
             "type": "boolean"
+          },
+          "ircConnected": {
+            "type": "boolean",
+            "description": "Whether the shared api IRC session is up. Self-healing: the session re-establishes lazily on the next search, so false after a drop is transient."
           }
         }
       },
@@ -571,6 +746,12 @@
             "type": "string",
             "example": "!Book Author - Title.zip",
             "description": "The !-prefixed identifier from the search results"
+          },
+          "callbackUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Optional. When set, openbooks POSTs a JSON body {status,book,file} to this URL once the requested book has landed. http(s) only. The api session processes book DCC transfers in request order, so completions are paired with requests FIFO. One retry; a dead URL is logged and dropped.",
+            "example": "https://hooks.example.com/openbooks"
           }
         }
       },
@@ -600,6 +781,18 @@
           },
           "persist": {
             "type": "boolean"
+          }
+        }
+      },
+      "DownloadedBook": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }

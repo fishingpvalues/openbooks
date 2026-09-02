@@ -16,6 +16,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/rs/cors"
+
+	"github.com/evan-buss/openbooks/server/integrations"
 )
 
 type server struct {
@@ -50,6 +52,12 @@ type server struct {
 	// seeded from the static config and overridable via the API. See
 	// server/settings.go.
 	settings *Settings
+
+	// PotatoStack v5 integrations: the outbound peer clients (Prowlarr,
+	// Audiobookshelf, Calibre-Web, Readarr) plus the download-completion
+	// webhook config. Built from the environment at start; every client is
+	// optional (empty base URL = disabled). See server/integrations/.
+	integrations *integrations.Bundle
 }
 
 // Config contains settings for server
@@ -84,14 +92,15 @@ type Config struct {
 
 func New(config Config) *server {
 	s := &server{
-		repository: NewRepository(),
-		config:     &config,
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		clients:    make(map[uuid.UUID]*Client),
-		log:        log.New(os.Stdout, "SERVER: ", log.LstdFlags|log.Lmsgprefix),
-		api:        newAPIState(),
-		settings:   &Settings{},
+		repository:   NewRepository(),
+		config:       &config,
+		register:     make(chan *Client),
+		unregister:   make(chan *Client),
+		clients:      make(map[uuid.UUID]*Client),
+		log:          log.New(os.Stdout, "SERVER: ", log.LstdFlags|log.Lmsgprefix),
+		api:          newAPIState(),
+		settings:     &Settings{},
+		integrations: integrations.FromEnvBundle(),
 	}
 	// Seed the runtime settings from the startup config; the CLI
 	// ensures the dir exists and is writable before Start is called.

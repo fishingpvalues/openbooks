@@ -43,9 +43,18 @@ const (
 type HandlerFunc func(text string)
 type EventHandler map[event]HandlerFunc
 
-func StartReader(ctx context.Context, irc *irc.Conn, handler EventHandler) {
+// StartReader reads lines from the IRC connection and dispatches the
+// corresponding events until the connection dies or the context is
+// cancelled. onDeath, when non-nil, is called exactly once when the read
+// loop exits (peer close, scanner error, or ctx done) so the owner can
+// learn the session is over - the v5 api session uses this to re-establish
+// its IRC connection after a VPN bounce or server drop.
+func StartReader(ctx context.Context, irc *irc.Conn, handler EventHandler, onDeath func()) {
 	var users strings.Builder
 	scanner := bufio.NewScanner(irc)
+	if onDeath != nil {
+		defer onDeath()
+	}
 
 	for scanner.Scan() {
 		select {

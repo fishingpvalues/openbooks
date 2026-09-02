@@ -1,7 +1,9 @@
-**/node_modules/
-**/build/
-**/dist/
-**/github/
-openbooks.exe
+.git/
+docs/
+build/
+node_modules/
+server/app/node_modules/
+server/app/dist/
+irc_log.txt
 openbooks
 *.exe

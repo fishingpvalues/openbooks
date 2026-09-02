@@ -12,6 +12,13 @@ type DccServer struct {
 	Port   string
 	Reader io.ReadSeeker
 	log    *log.Logger
+
+	// ActualPort is the port the listener bound to, set by Start. It
+	// differs from Port only when Port requests an ephemeral port (":0"),
+	// which is what the tests use so the mock never collides with a
+	// service that happens to hold a fixed port (6969 is whisparr on the
+	// stack, and the old test hard-coded it).
+	ActualPort int
 }
 
 func (dcc *DccServer) Start(ready chan<- struct{}) {
@@ -21,6 +28,7 @@ func (dcc *DccServer) Start(ready chan<- struct{}) {
 	if err != nil {
 		panic(err)
 	}
+	dcc.ActualPort = server.Addr().(*net.TCPAddr).Port
 	dcc.log.Println("Listening on " + dcc.Port)
 	ready <- struct{}{}
 

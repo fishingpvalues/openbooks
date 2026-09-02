@@ -2,9 +2,11 @@ package dcc
 
 import (
 	"bytes"
+	"strconv"
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
 
 	"github.com/evan-buss/openbooks/mock"
 )
@@ -40,24 +42,26 @@ func TestStringParsing(t *testing.T) {
 func TestDownload(t *testing.T) {
 	text := "Test dcc download content."
 
-	textDownload := Download{
-		Filename: "test.txt",
-		IP:       "localhost",
-		Port:     "6969",
-		Size:     int64(len(text)),
-	}
-
-	reader := bytes.NewReader([]byte(text))
+	// Bind the mock to an ephemeral port (":0") so the test never
+	// collides with a service holding a fixed port (6969 is whisparr on
+	// the stack). Dial the real port the OS assigned.
 	server := mock.DccServer{
-		Port:   ":" + textDownload.Port,
-		Reader: reader,
+		Port:   ":0",
+		Reader: bytes.NewReader([]byte(text)),
 	}
 
 	ready := make(chan struct{}, 1)
 	go server.Start(ready)
 	<-ready
 
-	t.Log("After server start")
+	t.Logf("After server start (bound to :%d)", server.ActualPort)
+
+	textDownload := Download{
+		Filename: "test.txt",
+		IP:       "localhost",
+		Port:     strconv.Itoa(server.ActualPort),
+		Size:     int64(len(text)),
+	}
 
 	received := new(mock.WriteCloser)
 	err := textDownload.Download(received)

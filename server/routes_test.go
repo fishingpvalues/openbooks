@@ -81,7 +81,7 @@ func TestDeleteBooksTraversal(t *testing.T) {
 	attacks := []string{
 		".." + "%2F" + ".." + "%2F" + "secret.txt", // encoded traversal
 		".." + "%2F" + ".." + "%2F" + "etc" + "%2F" + "passwd",
-		"%2E%2E%2F%2E%2E%2Fsecret.txt",              // fully encoded
+		"%2E%2E%2F%2E%2E%2Fsecret.txt", // fully encoded
 		"books%2F..%2F..%2Fsecret.txt",
 	}
 	for _, a := range attacks {

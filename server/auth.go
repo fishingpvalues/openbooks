@@ -81,6 +81,14 @@ func (server *server) tokenMatches(r *http.Request) bool {
 		}
 	}
 
+	// Newznab form: indexer tools (Prowlarr, Readarr) append their API key
+	// as ?apikey=*** on the indexer URL. Same token, standard protocol.
+	if query := r.URL.Query().Get("apikey"); query != "" {
+		if subtle.ConstantTimeCompare([]byte(query), []byte(want)) == 1 {
+			return true
+		}
+	}
+
 	return false
 }
 

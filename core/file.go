@@ -16,7 +16,15 @@ func DownloadExtractDCCString(baseDir, dccStr string, progress io.Writer) (strin
 		return "", err
 	}
 
-	dccPath := filepath.Join(baseDir, download.Filename+".temp")
+	// The DCC filename comes from the IRC book bot / a DCC sender - untrusted
+	// remote data. A crafted "DCC SEND ../../x" would write outside baseDir
+	// (and the extraction guard only covers entries *inside* an archive, so a
+	// plain traversal filename reaches os.Create unguarded). Reject it before
+	// any write so the library dir is the only place a download can land.
+	dccPath, err := util.SafeJoin(baseDir, download.Filename+".temp")
+	if err != nil {
+		return "", err
+	}
 	file, err := os.Create(dccPath)
 	if err != nil {
 		return "", err
