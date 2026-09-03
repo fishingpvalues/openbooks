@@ -29,7 +29,7 @@ Sources: https://github.com/billmal071/bookdl (README); local
 
 - **Search:** multi-source (Anna's Archive, Z-Library, Liber3); filters: format
   (EPUB/PDF), language, year or range, max file size, result limit; pagination;
-  search-result caching with TTL (24h default) + cache stats/clean.
+  search-result caching with TTL (opt-in via OPENBOOKS_SEARCH_CACHE_TTL, e.g. 24h; off by default) + cache stats/clean.
 - **Wanted/auto-download queue:** partial — manual queue only (`-q` multi-select,
   `queue list/clear/remove`). No polling, no re-search on failure, no RSS.
 - **Catalog & metadata:** no library DB. Books identified by MD5; no

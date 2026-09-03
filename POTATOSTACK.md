@@ -29,7 +29,7 @@ failed-release lifecycle:
 - **Search-result cache.** `POST /api/v1/search` is now cache-first:
   exact hit (query + filters, the filters are part of the key) inside
   the TTL is served with zero IRC traffic, `note: "cached"`.
-  `OPENBOOKS_SEARCH_CACHE_TTL` (default 24h, 0 = off), 4096-entry bound.
+  `OPENBOOKS_SEARCH_CACHE_TTL` (**off by default**, 0/unset = pre-v5.3; set e.g. 24h to enable, sub-1m clamps to 1m), 4096-entry bound.
   `GET/POST /api/v1/search-cache[/clean]` for stats + empty. The wanted
   poller is cache-first too: a re-search that hits the TTL spends no
   channel budget.
