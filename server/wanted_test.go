@@ -10,9 +10,9 @@ package server
 
 import (
 	"bytes"
-	"fmt"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -131,7 +131,7 @@ func TestWantedPollRoundDeadIRC(t *testing.T) {
 	s.settings.SetPersist(true)
 	ws := s.apiWanted
 	ws.mu.Lock()
-	it, err := ws.addWanted("a book that will not resolve", "", false)
+	it, err := ws.addWanted("a book that will not resolve", "", false, QualityFilters{}, false)
 	ws.mu.Unlock()
 	if err != nil {
 		t.Fatalf("add: %v", err)
@@ -161,7 +161,7 @@ func TestWantedSnapshot(t *testing.T) {
 	s := New(Config{DownloadDir: downloadDir, Persist: true, Basepath: "/"})
 	ws := s.apiWanted
 	ws.mu.Lock()
-	if _, err := ws.addWanted("restored book", "", true); err != nil {
+	if _, err := ws.addWanted("restored book", "", true, QualityFilters{}, false); err != nil {
 		t.Fatalf("add: %v", err)
 	}
 	s.saveWantedSnapshot(ws)
@@ -190,7 +190,7 @@ func TestWantedSnapshot(t *testing.T) {
 	s3 := New(Config{DownloadDir: d2, Persist: false, Basepath: "/"})
 	ws3 := s3.apiWanted
 	ws3.mu.Lock()
-	ws3.addWanted("ephemeral", "", false)
+	ws3.addWanted("ephemeral", "", false, QualityFilters{}, false)
 	s3.saveWantedSnapshot(ws3)
 	ws3.mu.Unlock()
 	if _, err := os.Stat(filepath.Join(d2, "wanted.json")); !os.IsNotExist(err) {
@@ -264,7 +264,7 @@ func TestOPDSFeed(t *testing.T) {
 		}
 	}
 
-	do := func(path string) (*httptest.ResponseRecorder) {
+	do := func(path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Authorization", "Bearer "+s.config.Token)
 		w := httptest.NewRecorder()
@@ -335,7 +335,7 @@ func TestUnifiedSearch(t *testing.T) {
 	s := newTokenServer(t)
 	router := v52Router(s)
 
-	post := func(body string) (*httptest.ResponseRecorder) {
+	post := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/search/unified",
 			bytes.NewBufferString(body))
 		req.Header.Set("Authorization", "Bearer "+s.config.Token)
@@ -411,8 +411,8 @@ func TestMetricsV52(t *testing.T) {
 
 	ws := s.apiWanted
 	ws.mu.Lock()
-	ws.addWanted("pending book", "", false)
-	ws.addWanted("matched book", "", false)
+	ws.addWanted("pending book", "", false, QualityFilters{}, false)
+	ws.addWanted("matched book", "", false, QualityFilters{}, false)
 	ws.items[1].MatchedAt = time.Now().UTC().Format(time.RFC3339)
 	ws.mu.Unlock()
 	recordUnifiedSearch(2)
@@ -429,8 +429,8 @@ func TestMetricsV52(t *testing.T) {
 		}
 	}
 	for metric, wantDelta := range map[string]int64{
-		"openbooks_unified_searches_total": 1,
-		"openbooks_wanted_matches_total":   1,
+		"openbooks_unified_searches_total":   1,
+		"openbooks_wanted_matches_total":     1,
 		"openbooks_wanted_autofetches_total": 1,
 	} {
 		before, after := counterOf(baseline, metric), counterOf(body, metric)

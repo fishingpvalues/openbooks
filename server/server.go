@@ -62,6 +62,11 @@ type server struct {
 	// PotatoStack v5.2: the persistent Wanted watchlist plus its snapshot.
 	// See server/wanted.go.
 	apiWanted *wantedState
+
+	// PotatoStack v5.3: the TTL search-result cache in front of
+	// performSearch (see server/searchcache.go). A zero-TTL cache is
+	// inert: lookup always misses and store is a no-op.
+	searchCache *searchCache
 }
 
 // Config contains settings for server
@@ -98,6 +103,16 @@ type Config struct {
 	// value disables the poller entirely (the REST endpoints still work,
 	// the entries just are not re-searched automatically).
 	WantedPollInterval time.Duration
+
+	// PotatoStack v5.3: the scoped-token table (see server/scopes.go),
+	// built from OPENBOOKS_SCOPED_TOKENS in Start. Empty = the pre-v5.3
+	// single-token behavior: the primary token opens every route.
+	ScopedTokens map[string]scopeSet
+
+	// PotatoStack v5.3: the search-result cache TTL
+	// (OPENBOOKS_SEARCH_CACHE_TTL, a Go duration). Zero = the cache is
+	// disabled and searches go live, as before v5.3.
+	SearchCacheTTL time.Duration
 }
 
 func New(config Config) *server {
@@ -112,6 +127,7 @@ func New(config Config) *server {
 		settings:     &Settings{},
 		integrations: integrations.FromEnvBundle(),
 		apiWanted:    newWantedState(),
+		searchCache:  newSearchCache(config.SearchCacheTTL),
 	}
 	// Seed the runtime settings from the startup config; the CLI
 	// ensures the dir exists and is writable before Start is called.
@@ -131,6 +147,39 @@ func Start(config Config) {
 	// secrets on a command line.
 	if config.Token == "" {
 		config.Token = os.Getenv("OPENBOOKS_TOKEN")
+	}
+
+	// PotatoStack v5.3: scoped tokens. The table is built here (not in
+	// New) so a misconfiguration fails at startup with the message, and
+	// New stays allocation-cheap for tests that never set them.
+	if raw := os.Getenv("OPENBOOKS_SCOPED_TOKENS"); raw != "" {
+		table, err := parseScopedTokens(raw)
+		if err != nil {
+			log.Fatalf("invalid OPENBOOKS_SCOPED_TOKENS: %s", err)
+		}
+		config.ScopedTokens = table
+		if len(table) > 0 {
+			log.Printf("Scoped tokens enabled: %d additional token(s) with scope-limited access (see server/scopes.go)\n", len(table))
+		}
+	}
+
+	// PotatoStack v5.3: the search-result cache TTL. 0 disables (the
+	// pre-v5.3 behavior); below 1m it is clamped so a poller can never
+	// serve a minutes-old "no results" as fresh.
+	cacheTTL := config.SearchCacheTTL
+	if raw := os.Getenv("OPENBOOKS_SEARCH_CACHE_TTL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil {
+			cacheTTL = d
+		} else {
+			log.Printf("ignoring invalid OPENBOOKS_SEARCH_CACHE_TTL=%q (want a Go duration)\n", raw)
+		}
+	}
+	if cacheTTL > 0 && cacheTTL < time.Minute {
+		cacheTTL = time.Minute
+	}
+	config.SearchCacheTTL = cacheTTL
+	if cacheTTL > 0 {
+		log.Printf("Search-result cache enabled: TTL %s (GET /api/v1/search-cache, POST .../search-cache/clean)\n", cacheTTL)
 	}
 
 	// PotatoStack v5: loopback by default. The docker image passes BindIP

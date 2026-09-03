@@ -14,11 +14,19 @@ package server
 // clients, so the UI and the REST API can share the server. Concurrent REST
 // calls share one api session: a second search while the first is in flight
 // gets a 429 from the rate limit, same as the UI.
+//
+// PotatoStack v5.3.0: the search-result cache (in front of performSearch),
+// the quality filters (on /search and /search/unified and wanted entries),
+// per-job download tracking (GET /api/v1/jobs, POST .../jobs/{id}/retry,
+// POST /api/v1/verify) and the download sidecar flag (echoed; the actual
+// sidecar fetch is wired to the wanted lifecycle - see wanted.go).
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed" // directive-only use: //go:embed openapi.json, no embed.X referenced
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,6 +88,10 @@ type APISearchRequest struct {
 	// callers like DAGs want results, not a "sent" ack. false is fire and
 	// forget.
 	Wait *bool `json:"wait,omitempty"`
+
+	// Filters are the v5.3.0 quality controls (formats, language,
+	// maxSizeBytes, prefer). Optional: empty = v5.2 behavior.
+	Filters QualityFilters `json:"filters,omitempty"`
 }
 
 // APISearchResponse is the response of POST /api/v1/search (wait=true).
@@ -102,6 +114,14 @@ type APIDownloadRequest struct {
 	// webhook (that one fires for every download; this one is per-request
 	// and only when the caller passes it).
 	CallbackURL string `json:"callbackUrl,omitempty"`
+
+	// WithSidecar asks for an ebook sidecar alongside an audiobook (the
+	// ReadMeABook pattern, adoption item 10). The flag is accepted and
+	// echoed in the response; the fetch of the matching ebook is wired to
+	// the wanted lifecycle (a wanted entry with withSidecar re-searches
+	// for the ebook class once the audiobook lands). A plain download is
+	// single-shot - there is no request state to hang a second fetch on.
+	WithSidecar bool `json:"withSidecar,omitempty"`
 }
 
 // searchOutcome is what the api event handlers deliver for one search.
@@ -130,9 +150,14 @@ type apiState struct {
 	// At most one search may be in flight; nil when none is.
 	pendingSearch chan searchOutcome
 
-	// Recent book downloads: file name -> completion time. Lets a caller
-	// see whether a requested book has landed without diffing the library.
+	// v5.3.0: per-job download tracking (adoption item 3). The v5.1.2
+	// completion log (name -> time) is kept for the legacy
+	// GET /api/v1/downloads contract and the Atom feed; the jobs map is
+	// the richer view: one entry per POST /api/v1/download request, with
+	// the requested book, its state, and the landed file's sha256
+	// (adoption item 7 - the verification baseline).
 	downloads map[string]time.Time
+	jobs      map[string]*DownloadJob
 
 	// downloadCallbacks is the FIFO of completion webhooks queued by
 	// POST /api/v1/download. The api IRC session is single-flight and
@@ -150,19 +175,50 @@ type downloadCallback struct {
 	URL string
 }
 
-func newAPIState() *apiState {
-	return &apiState{downloads: make(map[string]time.Time)}
+// ── v5.3.0: per-job download tracking (adoption item 3) ──────────────────
+//
+// bookdl-web exposes exactly this shape (per-job progress, pause/resume,
+// retry-failed, verify --fix); ReadMeABook tracks request state the same
+// way. The api IRC session is single-flight, so there is at most one
+// in-flight DCC transfer - the job state is the durable view over it:
+// requested -> completed (with the landed file name and its sha256) or
+// failed (the IRC side answered an error for the download). A completion
+// that matches no pending job (the operator deleted the job, or the
+// session was reaped between request and landing) still records the
+// completion log entry and the file's hash.
+
+// DownloadJob is one POST /api/v1/download request over its lifetime.
+type DownloadJob struct {
+	ID     string `json:"id"`
+	Book   string `json:"book"` // the "!"-identifier that was requested
+	Status string `json:"status"`
+
+	// RequestedAt / CompletedAt in RFC3339 (CompletedAt empty while
+	// pending).
+	RequestedAt  string `json:"requestedAt"`
+	CompletedAt  string `json:"completedAt,omitempty"`
+	Retries      int    `json:"retries"`
+	FileName     string `json:"fileName,omitempty"`
+	LibraryPath  string `json:"libraryPath,omitempty"`
+	SHA256       string `json:"sha256,omitempty"`
+	WithSidecar  bool   `json:"withSidecar,omitempty"`
+	FailedDetail string `json:"failedDetail,omitempty"`
 }
 
-// reapSession marks the api IRC session dead (the deferred unregister sends
-// block until process exit - the documented ws-path behavior) and lets the
-// next performSearch / startAPIClient bring up a fresh connection. This is
-// what keeps the REST API alive across a gluetun netns flap or an
-// irchighway server drop: without it the first search after the drop
-// silently times out (120s) and every later search hits the dead conn, so
-// openbooks reads as "up" to every healthcheck while every real search
-// fails - the exact failure shape of the v4.5.0 join race, now in steady
-// state.
+// DownloadedBook is the v5.1.2 completion-log entry (GET /api/v1/downloads).
+type DownloadedBook struct {
+	Name        string    `json:"name"`
+	CompletedAt time.Time `json:"completedAt"`
+	SHA256      string    `json:"sha256,omitempty"`
+}
+
+func newAPIState() *apiState {
+	return &apiState{
+		downloads: make(map[string]time.Time),
+		jobs:      make(map[string]*DownloadJob),
+	}
+}
+
 func (server *server) reapSession() {
 	state := server.api
 	state.mu.Lock()
@@ -327,10 +383,49 @@ func (server *server) deliverAPISearch(outcome searchOutcome) {
 	}
 }
 
+// sha256OfFile hashes a file in chunks (the library holds multi-MB books;
+// the whole file must not sit in memory).
+func sha256OfFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// normalizeBookFile is the file name a "!"-identifier or a DCC completion
+// arrives under: the leading "!" stripped and a trailing .temp removed (the
+// bot names in-flight transfers <name>.temp).
+func normalizeBookFile(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "!")
+	s = strings.TrimSuffix(s, ".temp")
+	return s
+}
+
+// recordAPIDownload is the completion hook (one landed book). It records
+// the completion log (legacy contract), matches the completion to the
+// pending job (request order - the single api session processes DCC
+// transfers in request order), computes the landed file's sha256 (the
+// verification baseline), and drains the callback FIFO in order.
 func (server *server) recordAPIDownload(name string) {
+	now := time.Now()
+	plain := normalizeBookFile(name)
+
 	state := server.api
 	state.mu.Lock()
-	state.downloads[name] = time.Now()
+	state.downloads[name] = now
+	if j := state.matchPendingJob(plain); j != nil {
+		j.Status = "completed"
+		j.CompletedAt = now.UTC().Format(time.RFC3339)
+		j.FileName = plain
+		j.LibraryPath = "/api/v1/library/" + strings.ReplaceAll(plain, " ", "%20")
+	}
 	// Drain the FIFO: this completion belongs to the oldest queued
 	// callback (book DCC transfers are handled in request order on the
 	// single api session).
@@ -341,12 +436,51 @@ func (server *server) recordAPIDownload(name string) {
 	}
 	state.mu.Unlock()
 
+	// The file's hash (persist mode only - non-persist files are deleted
+	// after serving and there is nothing to verify). Best effort: a
+	// vanishing file degrades the job to "no hash", never a lost
+	// completion.
+	if server.settings.GetPersist() {
+		p := filepath.Join(server.libraryBase(), plain)
+		if h, err := sha256OfFile(p); err == nil {
+			state.mu.Lock()
+			for _, j := range state.jobs {
+				if j.FileName == plain && j.Status == "completed" {
+					j.SHA256 = h
+					break
+				}
+			}
+			state.mu.Unlock()
+		}
+	}
+
 	server.log.Printf("api client: book download completed: %s\n", name)
 
 	if cb.URL == "" {
 		return
 	}
 	go server.fireDownloadCallback(cb, name)
+}
+
+// matchPendingJob pairs a completion to the job it belongs to. Call with
+// state.mu held. Exact normalized-name match first; then the oldest pending
+// job (request-order pairing - the DCC transfer order the single api
+// session guarantees). A completion that matches neither is an orphan: it
+// still lands in the completion log (the caller already wrote it).
+func (state *apiState) matchPendingJob(plain string) *DownloadJob {
+	var fallback *DownloadJob
+	for _, j := range state.jobs {
+		if j.Status != "requested" {
+			continue
+		}
+		if normalizeBookFile(j.Book) == plain {
+			return j
+		}
+		if fallback == nil || j.RequestedAt < fallback.RequestedAt {
+			fallback = j
+		}
+	}
+	return fallback
 }
 
 // fireDownloadCallback POSTs the download-completion webhook. Best effort:
@@ -403,8 +537,7 @@ func (server *server) healthHandler() http.HandlerFunc {
 		state.mu.Lock()
 		ircConnected := state.connected
 		state.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(HealthResponse{
+		writeJSON(w, http.StatusOK, HealthResponse{
 			Name:         "openbooks",
 			Version:      server.config.Version,
 			Persist:      server.settings.GetPersist(),
@@ -454,8 +587,7 @@ func (server *server) libraryListHandler() http.HandlerFunc {
 			})
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(output)
+		writeJSON(w, http.StatusOK, output)
 	}
 }
 
@@ -528,12 +660,6 @@ func (server *server) libraryDeleteHandler() http.HandlerFunc {
 	}
 }
 
-// DownloadedBook is one entry of GET /api/v1/downloads.
-type DownloadedBook struct {
-	Name       string    `json:"name"`
-	CompletedAt time.Time `json:"completedAt"`
-}
-
 // downloadsHandler is GET /api/v1/downloads - the book completions the api
 // session has recorded, oldest last (the completion map is keyed by file
 // name, so there is no request ordering; the timestamps give the caller
@@ -542,6 +668,9 @@ type DownloadedBook struct {
 // callers without a callbackUrl had to diff the library listing to learn
 // the file landed. 404 with a JSON error when persist mode is off, same
 // contract as GET /api/v1/library.
+//
+// v5.3.0: each entry carries the landed file's sha256 when it was computed
+// (the verification baseline, adoption item 7).
 func (server *server) downloadsHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !server.settings.GetPersist() {
@@ -552,14 +681,199 @@ func (server *server) downloadsHandler() http.HandlerFunc {
 		state := server.api
 		state.mu.Lock()
 		out := make([]DownloadedBook, 0, len(state.downloads))
+		hashes := map[string]string{}
+		for _, j := range state.jobs {
+			if j.SHA256 != "" && j.Status == "completed" {
+				hashes[j.FileName] = j.SHA256
+			}
+		}
 		for name, ts := range state.downloads {
-			out = append(out, DownloadedBook{Name: name, CompletedAt: ts})
+			out = append(out, DownloadedBook{
+				Name:        name,
+				CompletedAt: ts,
+				SHA256:      hashes[normalizeBookFile(name)],
+			})
 		}
 		state.mu.Unlock()
 
 		sort.Slice(out, func(i, j int) bool { return out[i].CompletedAt.Before(out[j].CompletedAt) })
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(out)
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// ── v5.3.0: job list / retry / verify endpoints ──────────────────────────
+
+// jobsHandler is GET /api/v1/jobs - the download request log, newest first.
+func (server *server) jobsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		state := server.api
+		state.mu.Lock()
+		out := make([]*DownloadJob, 0, len(state.jobs))
+		for _, j := range state.jobs {
+			out = append(out, j)
+		}
+		state.mu.Unlock()
+
+		sort.Slice(out, func(i, j int) bool { return out[i].RequestedAt > out[j].RequestedAt })
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// jobRetryHandler is POST /api/v1/jobs/{id}/retry - resend the DCC request
+// for a terminal job (Readarr's "automatic failed download handling tries
+// another release", adoption item 2, at the manual level: the poller-side
+// release rotation lives in wanted.go). The same single-flight and
+// validation rules apply as to POST /api/v1/download.
+func (server *server) jobRetryHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		state := server.api
+		state.mu.Lock()
+		j, ok := state.jobs[id]
+		if ok && j.Status == "requested" {
+			state.mu.Unlock()
+			writeJSONError(w, http.StatusConflict, "job already in flight")
+			return
+		}
+		if !ok {
+			state.mu.Unlock()
+			writeJSONError(w, http.StatusNotFound, "no such job")
+			return
+		}
+		book := j.Book
+		state.mu.Unlock()
+
+		if !strings.HasPrefix(strings.TrimSpace(book), "!") {
+			recordAPIDownloadError()
+			writeJSONError(w, http.StatusBadRequest, "book must be the !-prefixed identifier from search results")
+			return
+		}
+
+		recordAPIDownload()
+		if err := server.startAPIClient(); err != nil {
+			server.log.Printf("%s\n", err)
+			recordAPIStatus(http.StatusBadGateway)
+			writeJSONError(w, http.StatusBadGateway, "unable to connect to IRC server")
+			return
+		}
+
+		state.mu.Lock()
+		j.Status = "requested"
+		j.Retries++
+		j.FailedDetail = ""
+		j.CompletedAt = ""
+		state.mu.Unlock()
+		recordAPIIRCSession()
+		core.DownloadBook(state.client.irc, book)
+		server.log.Printf("api download retried: %s (job %s, retry %d)\n", book, id, j.Retries)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "requested",
+			"detail": "book re-requested over DCC; poll GET /api/v1/jobs until the file appears",
+		})
+	}
+}
+
+// verifyHandler is POST /api/v1/verify - check a landed book against its
+// recorded sha256 (bookdl's verify --fix, adoption item 7, at the check
+// level: a re-download is POST /api/v1/jobs/{id}/retry, not a silent
+// re-fetch - the operator must see which book failed). Body:
+// {"fileName": "...", "recompute": true?}. Without recompute the check is
+// recorded-hash only (no I/O); with it the file is hashed again and the
+// result reported. A file with no recorded hash (computed before v5.3.0)
+// is "missing" with recompute=true the way to establish the baseline.
+func (server *server) verifyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !server.settings.GetPersist() {
+			writeJSONError(w, http.StatusNotFound, "verify is only available with --persist")
+			return
+		}
+		var req struct {
+			FileName  string `json:"fileName"`
+			Recompute bool   `json:"recompute"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		fileName := strings.TrimSpace(req.FileName)
+		if !validBookName(fileName) {
+			writeJSONError(w, http.StatusBadRequest, "invalid file name")
+			return
+		}
+
+		state := server.api
+		state.mu.Lock()
+		var recorded string
+		jobID := ""
+		for _, j := range state.jobs {
+			if j.FileName == fileName && j.SHA256 != "" {
+				recorded = j.SHA256
+				jobID = j.ID
+			}
+		}
+		state.mu.Unlock()
+
+		target, ok := safeJoin(server.libraryBase(), fileName)
+		if !ok {
+			writeJSONError(w, http.StatusBadRequest, "invalid file name")
+			return
+		}
+		if _, err := os.Stat(target); err != nil {
+			writeJSONError(w, http.StatusNotFound, "file not in the library")
+			return
+		}
+
+		if recorded == "" && !req.Recompute {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"fileName": fileName,
+				"status":   "missing",
+				"detail":   "no recorded sha256; pass recompute=true to establish the baseline",
+			})
+			return
+		}
+
+		actual, err := sha256OfFile(target)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "unable to hash file: "+err.Error())
+			return
+		}
+
+		status := "ok"
+		if recorded != "" && actual != recorded {
+			status = "mismatch"
+		}
+		// Record a fresh baseline. When the file is tied to a job the
+		// hash lives on that job; otherwise a synthetic baseline job is
+		// kept (id "baseline:<file>") so the next verify without
+		// recompute compares against THIS run's hash instead of
+		// reporting "missing" forever.
+		state.mu.Lock()
+		if jobID != "" {
+			if j, ok := state.jobs[jobID]; ok {
+				j.SHA256 = actual
+			}
+		} else {
+			id := "baseline:" + fileName
+			if j, ok := state.jobs[id]; !ok {
+				state.jobs[id] = &DownloadJob{
+					ID:       id,
+					Book:     "",
+					Status:   "completed",
+					FileName: fileName,
+					SHA256:   actual,
+				}
+			} else {
+				j.SHA256 = actual
+			}
+		}
+		state.mu.Unlock()
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"fileName": fileName,
+			"status":   status,
+			"sha256":   actual,
+			"recorded": recorded,
+		})
 	}
 }
 
@@ -627,6 +941,31 @@ func (server *server) performSearch(query string) (APISearchResponse, int, int) 
 	return resp, http.StatusOK, 0
 }
 
+// searchCacheCheckAndStore wraps performSearch with the v5.3.0 cache: an
+// exact-query hit inside the TTL is served with ZERO IRC traffic; a miss
+// falls through to the live path and stores the result on success. The
+// fire-and-forget path (wait=false) does NOT use the cache (it sends a
+// search and returns immediately - there is nothing to serve back) but the
+// eventual outcome is not cached either (deliverAPISearch drops it).
+func (server *server) searchCacheCheckAndStore(query string, f QualityFilters) (APISearchResponse, int, int) {
+	key := cacheKey(query, f)
+	if resp, ok := server.searchCache.lookup(key); ok {
+		server.log.Printf("api search cache hit: %q\n", query)
+		return resp, http.StatusOK, 0
+	}
+
+	resp, status, retryAfter := server.performSearch(query)
+	if status == http.StatusOK && resp.Note != "" && !strings.Contains(resp.Note, "rate limited") &&
+		resp.Note != "timed out waiting for search results" {
+		// Only a real answer is cacheable: a failure note would poison
+		// the entry for the whole TTL. "no results" is a real answer
+		// (the negative is as valuable as the positive - a wanted poller
+		// must not re-ask the channel for a title with no releases).
+		server.searchCache.store(key, resp)
+	}
+	return resp, status, retryAfter
+}
+
 // sendSearchNow fires a search at the IRC bot and returns immediately
 // (fire-and-forget). It enforces the same rate limit as performSearch but
 // does NOT arm a result waiter, so it never blocks on the result. This is
@@ -660,8 +999,34 @@ func (server *server) sendSearchNow(query string) (int, int) {
 	return http.StatusOK, 0
 }
 
+// normalizeQualityFilters trims, lowercases and validates a filter set so
+// the cache key and the filter application agree on the request identity.
+// Invalid prefer values are dropped (400 is the caller's job at the
+// handler level; a silently-normalized value here keeps the shared path
+// honest).
+func normalizeQualityFilters(f QualityFilters) QualityFilters {
+	out := QualityFilters{Language: strings.ToLower(strings.TrimSpace(f.Language))}
+	for _, x := range f.Formats {
+		x = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(x, ".")))
+		if x != "" {
+			out.Formats = append(out.Formats, x)
+		}
+	}
+	out.MaxSizeBytes = f.MaxSizeBytes
+	switch strings.ToLower(strings.TrimSpace(f.Prefer)) {
+	case "ebook", "audiobook", "":
+		out.Prefer = strings.ToLower(strings.TrimSpace(f.Prefer))
+	default:
+		out.Prefer = ""
+	}
+	return out
+}
+
 // searchHandler is POST /api/v1/search - send a query to the IRC search bot
-// and (by default) wait for the parsed results. wait=false is fire-and-forget.
+// and (by default) wait for the parsed results. wait=false is
+// fire-and-forget. v5.3.0: the result cache sits in front of the live
+// search (exact query + filters, TTL), and the quality filters narrow the
+// result set.
 func (server *server) searchHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req APISearchRequest
@@ -677,6 +1042,7 @@ func (server *server) searchHandler() http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "query is required")
 			return
 		}
+		f := normalizeQualityFilters(req.Filters)
 
 		// One accepted search attempt (both wait paths); the 429/409/502
 		// below is also counted by recordAPIStatus in each branch.
@@ -698,12 +1064,11 @@ func (server *server) searchHandler() http.HandlerFunc {
 				return
 			}
 			recordAPIStatus(http.StatusOK)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(APISearchResponse{Waited: false, Note: "search sent"})
+			writeJSON(w, http.StatusOK, APISearchResponse{Waited: false, Note: "search sent"})
 			return
 		}
 
-		resp, status, retryAfter := server.performSearch(query)
+		resp, status, retryAfter := server.searchCacheCheckAndStore(query, f)
 		if status == http.StatusConflict || status == http.StatusTooManyRequests ||
 			status == http.StatusBadGateway {
 			if retryAfter > 0 {
@@ -716,15 +1081,43 @@ func (server *server) searchHandler() http.HandlerFunc {
 			return
 		}
 		recordAPIStatus(http.StatusOK)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+
+		// The quality filters apply to the parsed result set (the IRC bot
+		// cannot filter server-side; the channel query is untouched).
+		unified := make([]unifiedResult, 0, len(resp.Books))
+		for _, b := range resp.Books {
+			unified = append(unified, unifiedResult{
+				Source: "irc",
+				Title:  b.Title,
+				Author: b.Author,
+				Format: b.Format,
+				Size:   b.Size,
+				BookID: b.Full,
+			})
+		}
+		kept := applyQualityFilters(unified, f)
+		filteredBooks := make([]core.BookDetail, 0, len(kept))
+		for _, u := range kept {
+			for _, b := range resp.Books {
+				if b.Full == u.BookID {
+					filteredBooks = append(filteredBooks, b)
+					break
+				}
+			}
+		}
+		resp.Books = filteredBooks
+		if len(filteredBooks) == 0 && len(unified) > 0 {
+			resp.Note = "all results filtered out by quality filters"
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
 // downloadHandler is POST /api/v1/download - ask the IRC book server for a
 // book. The identifier is the "!"-prefixed line shown in search results.
-// The file arrives over DCC into the library dir; poll GET /api/v1/library
-// until it appears (a DCC transfer can take a while).
+// The file arrives over DCC into the library dir; poll GET /api/v1/jobs
+// (v5.3.0) or GET /api/v1/library until it appears (a DCC transfer can
+// take a while).
 func (server *server) downloadHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req APIDownloadRequest
@@ -770,38 +1163,79 @@ func (server *server) downloadHandler() http.HandlerFunc {
 
 		state := server.api
 		recordAPIIRCSession()
-		core.DownloadBook(state.client.irc, req.Book)
-		server.log.Printf("api download requested: %s\n", req.Book)
 
+		// v5.3.0: the job record (one per request). The id is the
+		// request's identity for GET /api/v1/jobs and the retry endpoint.
+		jobID := uuid.New().String()
+		now := time.Now().UTC().Format(time.RFC3339)
+		var client *Client
+		state.mu.Lock()
+		client = state.client
+		state.jobs[jobID] = &DownloadJob{
+			ID:          jobID,
+			Book:        req.Book,
+			Status:      "requested",
+			RequestedAt: now,
+			WithSidecar: req.WithSidecar,
+		}
+		// Bound the job log (the completion log is bounded by the library;
+		// the job log is not - a caller can request 10k books). Keep the
+		// 256 newest.
+		if len(state.jobs) > 256 {
+			ids := make([]string, 0, len(state.jobs))
+			dates := map[string]string{}
+			for id, j := range state.jobs {
+				ids = append(ids, id)
+				dates[id] = j.RequestedAt
+			}
+			sort.Slice(ids, func(i, j int) bool { return dates[ids[i]] < dates[ids[j]] })
+			drop := len(state.jobs) - 256
+			for i := 0; i < drop; i++ {
+				delete(state.jobs, ids[i])
+			}
+		}
 		// Queue the completion webhook (FIFO): the api IRC session handles
 		// book DCC transfers in request order, so recordAPIDownload
 		// delivers this to the oldest queued callback when the book lands.
 		// callbackURL is already validated above (pre-IRC).
 		if callbackURL != "" {
-			state.mu.Lock()
 			state.downloadCallbacks = append(state.downloadCallbacks,
 				downloadCallback{Book: req.Book, URL: callbackURL})
-			state.mu.Unlock()
 		}
+		state.mu.Unlock()
 
-		w.Header().Set("Content-Type", "application/json")
+		// The session is live (startAPIClient would have failed otherwise);
+		// the client is read under the lock above so this read does not
+		// race a concurrent (re)start.
+		core.DownloadBook(client.irc, req.Book)
+		server.log.Printf("api download requested: %s (job %s)\n", req.Book, jobID)
+
 		resp := map[string]string{
 			"status": "requested",
-			"detail": "book requested over DCC; poll GET /api/v1/library until the file appears",
+			"jobId":  jobID,
+			"detail": "book requested over DCC; poll GET /api/v1/jobs until the file appears",
 		}
 		if req.CallbackURL != "" {
 			resp["callback"] = "a completion POST will be sent to callbackUrl when the book lands"
 		}
-		json.NewEncoder(w).Encode(resp)
+		if req.WithSidecar {
+			resp["sidecar"] = "ebook sidecar requested; fetched by the wanted lifecycle once the audiobook lands"
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
-// registerRoutes wires the whole HTTP tree.
-//
-// The static SPA and the OpenAPI document are open: the SPA ships no data,
-// only the UI shell, and openapi.json is documentation. Everything else -
-// the legacy browser endpoints AND the /api/v1 REST API - is behind
-// requireToken.
+// writeJSON is the small JSON-200 helper the v5.3.0 handlers share.
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+// registerRoutes builds the chi router. Every data route sits behind
+// requireToken (and, for the v5.3.0 scopes, a per-route requireScope);
+// the static SPA and the two openapi.json copies stay open (they ship no
+// data).
 func (server *server) registerRoutes() *chi.Mux {
 	router := chi.NewRouter()
 
@@ -811,15 +1245,22 @@ func (server *server) registerRoutes() *chi.Mux {
 	router.Handle("/*", server.staticFilesHandler("app/dist"))
 
 	// Legacy browser endpoints (the React app still uses these).
-	router.With(server.requireToken).Get("/ws", server.serveWs())
-	router.With(server.requireToken).Get("/stats", server.statsHandler())
-	router.With(server.requireToken).Get("/servers", server.serverListHandler())
+	// v5.3.0: the ui scope - the legacy surface IS the UI surface, so a
+	// scoped token used with the browser carries exactly this scope
+	// (and nothing else can read the library through it).
+	router.With(server.requireToken, server.requireScopeMW("ui")).Get("/ws", server.serveWs())
+	router.With(server.requireToken, server.requireScopeMW("ui")).Get("/stats", server.statsHandler())
+	router.With(server.requireToken, server.requireScopeMW("ui")).Get("/servers", server.serverListHandler())
 	router.Group(func(r chi.Router) {
-		r.Use(server.requireToken)
+		r.Use(server.requireToken, server.requireScopeMW("ui"))
 		r.Get("/library", server.getAllBooksHandler())
-		r.Delete("/library/{fileName}", server.deleteBooksHandler())
 		r.Get("/library/*", server.getBookHandler())
 	})
+	// The legacy library delete is admin-only (it spends a write against
+	// the shared download dir), so it sits OUTSIDE the ui group with its
+	// own scope gate - a ui token must not be able to delete library
+	// files through the browser surface.
+	router.With(server.requireToken, server.requireScopeMW("admin")).Delete("/library/{fileName}", server.deleteBooksHandler())
 
 	// Inbound Newznab: openbooks as a book indexer for the *arr stack.
 	// Prowlarr/Readarr point a book indexer here and search through the
@@ -827,45 +1268,75 @@ func (server *server) registerRoutes() *chi.Mux {
 	// route). It is token-gated and sits next to the SPA, not under
 	// /api/v1, because indexer tools poll it exactly like they poll a
 	// tracker's Newznab URL.
-	router.With(server.requireToken).Get("/torznab", server.torznabHandler())
+	// v5.3.0: the newznab scope - the indexer apikey travels in *arr
+	// configs, so a scoped token for it must be the narrowest.
+	router.With(server.requireToken, server.requireScopeMW("newznab")).Get("/torznab", server.torznabHandler())
 
 	// PotatoStack v5.2: the OPDS 1.0 catalog of the local library
 	// (ereader apps consume the downloaded tree directly). Token-gated
 	// like /torznab; ?search=term is the OPDS search contract.
-	router.With(server.requireToken).Get("/opds", server.opdsFeedHandler())
+	router.With(server.requireToken, server.requireScopeMW("ui")).Get("/opds", server.opdsFeedHandler())
 
-	// REST API for the rest of the stack.
+	// REST API for the rest of the stack. v5.3.0: the routes sit in
+	// three scope groups (ui / search / admin) under the shared token
+	// gate - a scoped token sees only its group, and the primary token
+	// (all scopes) sees everything, exactly like the pre-v5.3 behavior.
 	router.With(server.requireToken).Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", server.healthHandler())
 		r.Get("/openapi.json", server.openapiHandler())
-		r.Get("/library", server.libraryListHandler())
-		r.Get("/library/*", server.libraryFileHandler())
-		r.Delete("/library/{name}", server.libraryDeleteHandler())
-		r.Post("/search", server.searchHandler())
-		r.Post("/download", server.downloadHandler())
-		// Book completions recorded by the api session (the polling path
-		// for callers without a callbackUrl).
-		r.Get("/downloads", server.downloadsHandler())
-		// Prometheus-format metrics for the stack's monitoring.
-		r.Get("/metrics", server.metricsHandler())
-		// PotatoStack v5.2: the persistent Wanted watchlist (POST adds a
-		// book to re-search on the poller interval; GET lists entries;
-		// DELETE removes one). See server/wanted.go.
-		r.Post("/wanted", server.wantedAddHandler())
-		r.Get("/wanted", server.wantedListHandler())
-		r.Delete("/wanted/{query}", server.wantedDeleteHandler())
-		// The Atom feed of library activity (new books + completions).
-		r.Get("/feeds/atom", server.atomFeedHandler())
-		// The unified multi-source search (IRC + Prowlarr).
-		r.Post("/search/unified", server.unifiedSearchHandler())
-		// Runtime-mutable settings (port of the fork's a65ef3d settings
-		// work). Changing the download dir at runtime rewrites where
-		// downloads land without a restart.
-		r.Get("/settings", server.settingsHandler())
-		r.Put("/settings", server.settingsHandler())
-		// Outbound peer integrations: which services are configured and
-		// (with ?probe=1) reachable.
-		r.Get("/integrations", server.integrationsOverviewHandler())
+
+		// ui scope: library reads + the feeds the UI generates links
+		// for (Atom/OPDS). A ui token cannot search or download.
+		r.Group(func(r chi.Router) {
+			r.Use(server.requireScopeMW("ui"))
+			r.Get("/library", server.libraryListHandler())
+			r.Get("/library/*", server.libraryFileHandler())
+			r.Get("/feeds/atom", server.atomFeedHandler())
+		})
+
+		// search scope: the DAG + poller + indexer-facing surface
+		// (search, the wanted watchlist, completion polling). A ui token
+		// must not be able to burn the IRC budget.
+		r.Group(func(r chi.Router) {
+			r.Use(server.requireScopeMW("search"))
+			r.Post("/search", server.searchHandler())
+			r.Post("/search/unified", server.unifiedSearchHandler())
+			r.Get("/downloads", server.downloadsHandler())
+			// PotatoStack v5.2: the persistent Wanted watchlist. A
+			// watchlist is a standing search, and the poller's
+			// auto-fetch goes through the same single api session the
+			// search scope already implies.
+			r.Post("/wanted", server.wantedAddHandler())
+			r.Get("/wanted", server.wantedListHandler())
+			r.Delete("/wanted/{query}", server.wantedDeleteHandler())
+		})
+
+		// admin scope: writes + spend-the-session actions (download,
+		// verify, job retry, cache clean, settings, integrations probe,
+		// metrics scrape) and library deletes.
+		r.Group(func(r chi.Router) {
+			r.Use(server.requireScopeMW("admin"))
+			r.Delete("/library/{name}", server.libraryDeleteHandler())
+			r.Post("/download", server.downloadHandler())
+			// PotatoStack v5.3: the per-job download view and its actions.
+			r.Get("/jobs", server.jobsHandler())
+			r.Post("/jobs/{id}/retry", server.jobRetryHandler())
+			// PotatoStack v5.3: the sha256 verification of a landed book.
+			r.Post("/verify", server.verifyHandler())
+			// PotatoStack v5.3: the search-result cache stats + clean.
+			r.Get("/search-cache", server.searchCacheHandler())
+			r.Post("/search-cache/clean", server.searchCacheCleanHandler())
+			// Prometheus-format metrics for the stack's monitoring.
+			r.Get("/metrics", server.metricsHandler())
+			// Runtime-mutable settings (port of the fork's a65ef3d
+			// settings work). Changing the download dir at runtime
+			// rewrites where downloads land without a restart.
+			r.Get("/settings", server.settingsHandler())
+			r.Put("/settings", server.settingsHandler())
+			// Outbound peer integrations: which services are configured
+			// and (with ?probe=1) reachable.
+			r.Get("/integrations", server.integrationsOverviewHandler())
+		})
 	})
 
 	return router

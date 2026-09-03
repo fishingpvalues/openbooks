@@ -55,6 +55,12 @@ type unifiedResult struct {
 	// BookID is the fetch identifier when the source exposes one (the
 	// IRC leg: the "!"-prefixed DCC line).
 	BookID string `json:"bookId,omitempty"`
+	// DedupGroup is the number of results (across every source in the
+	// response) that share this result's dedup key (title+author, or
+	// ISBN when the source exposes one). 1 = unique; >1 = the same book
+	// surfaced from multiple sources. Set by annotateDedupe (v5.3.0,
+	// adoption item 8) on the unified search response.
+	DedupGroup int `json:"dedupGroup,omitempty"`
 }
 
 // unifiedSourceStatus is the per-leg outcome of the request. Status is
@@ -82,6 +88,11 @@ type unifiedSearchRequest struct {
 	// Unknown names are rejected with 400 (a typo must not silently
 	// shrink the search).
 	Sources []string `json:"sources"`
+	// Filters are the v5.3.0 quality controls (formats, language,
+	// maxSizeBytes, prefer), applied to the normalized result set after
+	// both legs answered (see applyQualityFilters). Optional: empty =
+	// the v5.2 behavior.
+	Filters QualityFilters `json:"filters,omitempty"`
 }
 
 // unifiedKnownSources is the valid source set.
@@ -121,6 +132,7 @@ func (server *server) unifiedSearchHandler() http.HandlerFunc {
 				}
 			}
 		}
+		f := normalizeQualityFilters(req.Filters)
 
 		start := time.Now()
 		out := unifiedResponse{Query: query, Results: []unifiedResult{}}
@@ -134,6 +146,16 @@ func (server *server) unifiedSearchHandler() http.HandlerFunc {
 			books, statuses := server.unifiedProwlarrLeg(query)
 			out.Results = append(out.Results, books...)
 			out.Sources = append(out.Sources, statuses...)
+		}
+
+		// v5.3.0: the quality filters narrow the normalized set (both
+		// legs - the Prowlarr search API takes no size/format params, so
+		// filtering happens here for every source, which keeps the
+		// contract identical across legs), and the dedupe annotation
+		// counts same-book hits across sources (adoption item 8).
+		if len(out.Results) > 0 {
+			out.Results = applyQualityFilters(out.Results, f)
+			annotateDedupe(out.Results)
 		}
 		out.Took = time.Since(start).Round(time.Millisecond).String()
 

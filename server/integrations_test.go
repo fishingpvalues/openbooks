@@ -627,7 +627,7 @@ func TestOpenAPISpecDrift(t *testing.T) {
 	if err := json.Unmarshal(openapiSpec, &spec); err != nil {
 		t.Fatalf("embedded openapi.json does not parse: %v", err)
 	}
-	if spec.Info.Version != "5.2.0" {
+	if spec.Info.Version != "5.3.0" {
 		t.Errorf("openapi version = %q, want 5.1.2", spec.Info.Version)
 	}
 	for _, p := range []string{
@@ -639,6 +639,13 @@ func TestOpenAPISpecDrift(t *testing.T) {
 		"/api/v1/search",
 		"/api/v1/health",
 		"/api/v1/library",
+		// v5.3.0: per-job download tracking, sha256 verify, the search
+		// cache stats + clean.
+		"/api/v1/jobs",
+		"/api/v1/jobs/{id}/retry",
+		"/api/v1/verify",
+		"/api/v1/search-cache",
+		"/api/v1/search-cache/clean",
 	} {
 		if _, ok := spec.Paths[p]; !ok {
 			t.Errorf("openapi.json missing path %q", p)

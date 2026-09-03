@@ -2,9 +2,9 @@
   "openapi": "3.0.3",
   "info": {
     "title": "OpenBooks API",
-    "version": "5.2.0",
+    "version": "5.3.0",
     "summary": "PotatoStack patched build of evan-buss/openbooks: IRC Highway eBook search and download, plus a REST API",
-    "description": "PotatoStack v5 of evan-buss/openbooks (upstream base v4.5.0). Adds bearer-token authentication on every API route, a REST API (/api/v1) on top of the websocket-only upstream app, path-traversal hardening on all library endpoints, loopback-only bind by default, TLS verification for IRC, and vulnerability fixes in the dependency tree. All /api/v1 and legacy endpoints require a token when the server was started with OPENBOOKS_TOKEN (Authorization: Bearer header, X-OpenBooks-Token header, or ?token= query parameter). Only the static SPA and this document are unauthenticated. v5.1.2 adds GET /api/v1/downloads (book completions recorded by the api session) and GET /api/v1/metrics (Prometheus text format), and the api IRC session now re-establishes itself after the reader detects a dead connection. v5.2.0 adds the persistent Wanted watchlist (POST/GET/DELETE /api/v1/wanted with a re-search poller), the Atom feed of library activity (GET /api/v1/feeds/atom), the OPDS 1.0 catalog of the local library (GET /opds, with ?search=), and the unified multi-source search (POST /api/v1/search/unified, IRC + Prowlarr with per-source status)."
+    "description": "PotatoStack v5 of evan-buss/openbooks (upstream base v4.5.0). Adds bearer-token authentication on every API route, a REST API (/api/v1) on top of the websocket-only upstream app, path-traversal hardening on all library endpoints, loopback-only bind by default, TLS verification for IRC, and vulnerability fixes in the dependency tree. All /api/v1 and legacy endpoints require a token when the server was started with OPENBOOKS_TOKEN (Authorization: Bearer header, X-OpenBooks-Token header, or ?token= query parameter). Only the static SPA and this document are unauthenticated. v5.1.2 adds GET /api/v1/downloads (book completions recorded by the api session) and GET /api/v1/metrics (Prometheus text format), and the api IRC session now re-establishes itself after the reader detects a dead connection. v5.2.0 adds the persistent Wanted watchlist (POST/GET/DELETE /api/v1/wanted with a re-search poller), the Atom feed of library activity (GET /api/v1/feeds/atom), the OPDS 1.0 catalog of the local library (GET /opds, with ?search=), and the unified multi-source search (POST /api/v1/search/unified, IRC + Prowlarr with per-source status). v5.3.0 adds scoped bearer tokens (OPENBOOKS_SCOPED_TOKENS; ui/search/newznab/admin, a scope miss is a 403), a TTL search-result cache (GET/POST /api/v1/search-cache[/clean]), quality-control filters on search and the wanted watchlist (formats/language/maxSizeBytes/prefer), cross-source result dedupe (dedupKey grouping in /search/unified), per-job download tracking with retry (GET /api/v1/jobs, POST /api/v1/jobs/{id}/retry), sha256 verification of a landed book (POST /api/v1/verify), wanted-entry failed-release tracking with backoff/stale (GET /api/v1/wanted entries now carry attempts/seenReleases/staleSince), and the ebook sidecar flag (withSidecar on POST /wanted)."
   },
   "servers": [
     {
@@ -825,6 +825,120 @@
           },
           "404": {
             "description": "Persist mode off, or the library is unavailable."
+          }
+        }
+      }
+    },
+    "/api/v1/jobs": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "Per-job download status (in-flight and terminal, newest first, 256-entry cap)",
+        "description": "Every download requested through POST /download is tracked as a job: the request identifier, the book it resolved to, the current status (requested/downloading/completed/failed), and the file name and sha256 on completion. The map is capped at the 256 most recent jobs; older ones fall off silently (GET /api/v1/downloads is the durable completion record).",
+        "operationId": "jobsList",
+        "responses": {
+          "200": {
+            "description": "Success."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Token is valid but lacks the required scope."
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{id}/retry": {
+      "post": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "Re-request a failed job",
+        "description": "Sends the job's original download command to the IRC session again. A job whose status is not failed returns 409 (re-fetching a completed job is the verify/re-download path, not a retry). The job status resets to requested and its id is preserved.",
+        "operationId": "jobsRetry",
+        "responses": {
+          "200": {
+            "description": "Job re-requested."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Token is valid but lacks the admin scope."
+          },
+          "404": {
+            "description": "No job with this id."
+          },
+          "409": {
+            "description": "Job is not in a retryable state."
+          }
+        }
+      }
+    },
+    "/api/v1/verify": {
+      "post": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "sha256 verification of a landed book",
+        "description": "Computes the sha256 of a file in the download directory and compares it to the hash recorded when the job completed. {file} is required; {jobId} is optional (without it the hash is recorded as a baseline for a later verify). status is ok (hash matches / newly recorded), mismatch, or missing (file not found).",
+        "operationId": "verifyBook",
+        "responses": {
+          "200": {
+            "description": "Verification result: {file, status, sha256, recordedSha256}."
+          },
+          "400": {
+            "description": "Missing or invalid body / file name."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Token is valid but lacks the admin scope."
+          }
+        }
+      }
+    },
+    "/api/v1/search-cache": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "Search-result cache statistics",
+        "description": "The v5.3.0 TTL cache in front of performSearch: current entry count, hit/miss counters, the configured TTL, and a bounded sample of cached query keys. POST /api/v1/search is the consumer: an exact hit (same query, same quality filters) inside the TTL is served with zero IRC traffic and carries note=cached.",
+        "operationId": "searchCacheStats",
+        "responses": {
+          "200": {
+            "description": "Success."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Token is valid but lacks the required scope."
+          }
+        }
+      }
+    },
+    "/api/v1/search-cache/clean": {
+      "post": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "Empty the search-result cache",
+        "description": "Drops every cached entry (hit/miss counters are preserved). Use after a large library change when the cached answers are stale but you do not want to restart.",
+        "operationId": "searchCacheClean",
+        "responses": {
+          "200": {
+            "description": "Number of entries removed."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Token is valid but lacks the admin scope."
           }
         }
       }

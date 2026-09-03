@@ -21,15 +21,19 @@ import (
 // metrics counters. Status codes are a fixed set so the label space stays
 // small (the map is for iteration, not cardinality).
 var (
-	apiMetricsMu      sync.Mutex
-	apiHTTPStatuses   = map[string]uint64{}
-	apiSearchCount    uint64
-	apiDownloadCount  uint64
-	apiDownloadErrors uint64
-	apiIRCSessions    uint64
+	apiMetricsMu       sync.Mutex
+	apiHTTPStatuses    = map[string]uint64{}
+	apiSearchCount     uint64
+	apiDownloadCount   uint64
+	apiDownloadErrors  uint64
+	apiIRCSessions     uint64
 	apiUnifiedSearches uint64
-	wantedMatches     uint64
-	wantedAutoFetches uint64
+	wantedMatches      uint64
+	wantedAutoFetches  uint64
+	// PotatoStack v5.3: the search cache and the wanted failure path.
+	cacheHits    uint64
+	cacheMisses  uint64
+	wantedFailed uint64
 )
 
 // metricsHandler is GET /api/v1/metrics.
@@ -116,6 +120,23 @@ func (server *server) metricsHandler() http.HandlerFunc {
 		fmt.Fprintf(w, "# TYPE openbooks_wanted_autofetches_total counter\n")
 		fmt.Fprintf(w, "openbooks_wanted_autofetches_total %d\n", wf)
 
+		// PotatoStack v5.3: the search cache and the wanted failure path.
+		// The cache stats also come from the cache itself (GET
+		// /api/v1/search-cache); the counters here are the Prometheus
+		// view of the same events.
+		ch := atomic.LoadUint64(&cacheHits)
+		cm := atomic.LoadUint64(&cacheMisses)
+		wfFailed := atomic.LoadUint64(&wantedFailed)
+		fmt.Fprintf(w, "# HELP openbooks_search_cache_hits_total Cached search answers served (zero IRC traffic)\n")
+		fmt.Fprintf(w, "# TYPE openbooks_search_cache_hits_total counter\n")
+		fmt.Fprintf(w, "openbooks_search_cache_hits_total %d\n", ch)
+		fmt.Fprintf(w, "# HELP openbooks_search_cache_misses_total Search lookups that missed the cache\n")
+		fmt.Fprintf(w, "# TYPE openbooks_search_cache_misses_total counter\n")
+		fmt.Fprintf(w, "openbooks_search_cache_misses_total %d\n", cm)
+		fmt.Fprintf(w, "# HELP openbooks_wanted_failed_rounds_total Wanted poll rounds that failed (IRC session down)\n")
+		fmt.Fprintf(w, "# TYPE openbooks_wanted_failed_rounds_total counter\n")
+		fmt.Fprintf(w, "openbooks_wanted_failed_rounds_total %d\n", wfFailed)
+
 		// Seed the standard status set so the metric family is always
 		// present, even on a fresh server with no recorded statuses (an
 		// absent family reads as "metric missing" to a dashboard).
@@ -172,6 +193,27 @@ func recordWantedMatched() {
 // recordWantedAutoFetch counts one wanted entry the poller fetched.
 func recordWantedAutoFetch() {
 	atomic.AddUint64(&wantedAutoFetches, 1)
+}
+
+// recordWantedFailed counts one wanted poll round that failed (IRC
+// session down). Rate-limited rounds are NOT counted (the channel
+// budget working as designed is not a failure).
+func recordWantedFailed() {
+	atomic.AddUint64(&wantedFailed, 1)
+}
+
+// recordCacheHit counts one search answer served from the v5.3.0
+// search-result cache (zero IRC traffic).
+func recordCacheHit() {
+	atomic.AddUint64(&cacheHits, 1)
+}
+
+// recordCacheMiss counts one cache lookup that missed (the live path
+// ran). A lookup of a disabled (zero-TTL) cache is a miss by
+// definition and is counted the same way: the metric is "this request
+// did not get a cached answer".
+func recordCacheMiss() {
+	atomic.AddUint64(&cacheMisses, 1)
 }
 
 // recordAPIStatus counts one /api/v1 response by its final status code.

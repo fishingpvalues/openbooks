@@ -1,10 +1,67 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.2.0 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.3.0 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.3.0 (2026-09-03) - hardening + observability line (research-driven)
+
+Follow-up to the v5.2.0 feature-matrix audit: the remaining adoptable
+items that are downloader-shaped (not catalogue-shaped) - scoped
+authentication, result caching, quality filters, cross-source dedupe,
+per-job download tracking, verification, and the wanted entry's
+failed-release lifecycle:
+
+- **Scoped bearer tokens.** `OPENBOOKS_SCOPED_TOKENS` adds secondary
+  tokens with a scope set (`ui`/`search`/`newznab`/`admin`, `;`-separated
+  `token:scope,scope`). The primary `OPENBOOKS_TOKEN` keeps full
+  privilege (existing deploys unchanged); a scope miss is a 403 (the
+  token is known, the privilege is not) vs the 401 of a missing/invalid
+  token. Scope groups in `registerRoutes`: `ui` = library reads +
+  feeds/Atom/OPDS; `search` = search/unified/wanted/downloads; `admin`
+  = download/verify/jobs/cache-clean/settings/integrations/metrics +
+  legacy library delete (moved out of the ui group). The indexer
+  surface (`/torznab`) is `newznab`-scoped: a scoped indexer apikey
+  cannot search or download. Parse is fail-loud at startup
+  (`server/scopes.go`), auth is constant-time (`server/auth.go`).
+- **Search-result cache.** `POST /api/v1/search` is now cache-first:
+  exact hit (query + filters, the filters are part of the key) inside
+  the TTL is served with zero IRC traffic, `note: "cached"`.
+  `OPENBOOKS_SEARCH_CACHE_TTL` (default 24h, 0 = off), 4096-entry bound.
+  `GET/POST /api/v1/search-cache[/clean]` for stats + empty. The wanted
+  poller is cache-first too: a re-search that hits the TTL spends no
+  channel budget.
+- **Quality filters.** `{formats?, language?, maxSizeBytes?, prefer?}`
+  on `/search` and `/search/unified`; persisted on wanted entries so a
+  poll round re-searches the SAME shape (a match that drifts format or
+  language is a different book). Applied to the normalized result set
+  for every source - the IRC bot cannot take filters server-side and the
+  Prowlarr search API has no size/format params, so the contract is
+  identical across legs. `prefer: "ebook"|"audiobook"` is the
+  sidecar's gate.
+- **Cross-source dedupe.** `/search/unified` results carry `dedupGroup`
+  (same ISBN, else `title|author`, across sources): one book hitting IRC
+  and Prowlarr is a group of 2. `ParseSizeToBytes` strips whitespace
+  before the suffix match - "900 MB" (Prowlarr spelling) parses now,
+  where only the IRC leg's spaceless "900MB" did before.
+- **Per-job download tracking + retry.** `POST /download` jobs are
+  tracked in-memory (256 cap): `GET /api/v1/jobs`, `POST
+  /api/v1/jobs/{id}/retry` (409 on non-failed). sha256 at completion;
+  `POST /api/v1/verify {file, jobId?}` is `ok|mismatch|missing` (baseline
+  job when no `jobId`).
+- **Wanted lifecycle.** Entries carry `attempts`/`failedRounds` with
+  per-entry backoff (5m base, doubling, 24h cap), `staleSince` at 7
+  days no-match (still polled), `seenReleases` (a release that already
+  matched is never re-matched - Readarr-style failed-release handling at
+  the entry level), and `withSidecar` (ReadMeABook, adoption item 10:
+  once the audiobook match is handled, the ebook class of the same
+  round's results is fetched).
+- Metrics: `openbooks_search_cache_{hits,misses}_total`,
+  `openbooks_wanted_failed_rounds_total`.
+- Version: `5.3.0` (`cmd/openbooks/main.go`, `server/openapi.json` - now
+  21 paths; the drift test pins the five new ones).
 
 ## v5.2.0 (2026-09-02) - acquisition layer (research-driven)
 

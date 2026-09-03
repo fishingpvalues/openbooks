@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -184,7 +185,7 @@ func ParseSearchV2(reader io.Reader) ([]BookDetail, []ParseError) {
 func parseLineV2(line string) (BookDetail, error) {
 	getServer := func(line string) (string, error) {
 		if line[0] != '!' {
-			return "", errors.New("result lines must start with '!'")
+			return "", errors.New("result lines must start with '!'\n")
 		}
 
 		firstSpace := strings.Index(line, " ")
@@ -248,7 +249,7 @@ func parseLineV2(line string) (BookDetail, error) {
 					}
 				}
 			}
-			title = line[titleStart : endTitle]
+			title = line[titleStart:endTitle]
 			endIndex = endTitle
 		}
 
@@ -293,4 +294,85 @@ func parseLineV2(line string) (BookDetail, error) {
 		Size:   size,
 		Full:   strings.TrimSpace(line[:endIndex]),
 	}, nil
+}
+
+// PotatoStack v5.3.0: quality-control helpers for the search layer.
+//
+// The size unit and the format class are properties of the IRC search bot's
+// output format, so the parsing lives next to the parser: the bot reports
+// sizes like "237.78KB" / "1.2MB" / "N/A" (1024 scale - verified against
+// DCC transfer sizes, the KB value times 1024 matches the landed file), and
+// the extension in a result line is the file type.
+
+// audioFormats are the extensions openbooks treats as audiobooks for the
+// quality filters (prefer=audiobook) and the sidecar logic. The IRC bot's
+// parser (fileTypes above) does not list them - audio results arrive with an
+// empty Format field, which is why the class check must also match on the
+// raw extension (FormatOrExt in the server layer).
+var audioFormats = []string{
+	"mp3", "m4b", "m4a", "m4p", "ogg", "oga", "flac", "aac", "wav", "wma",
+}
+
+// ParseSizeToBytes converts a size the IRC search bot reports into bytes.
+// The bot's unit scale is 1024. Unparseable or missing sizes ("", "N/A")
+// return 0, which callers must treat as "size unknown" (never a reason to
+// reject a result). The IRC leg is spaceless ("237.78KB"); other sources
+// (Prowlarr) may space the unit ("900 MB"), so all whitespace is stripped
+// before the suffix match - otherwise a spaced size parses as unknown and
+// the size cap silently stops applying to that source's results.
+func ParseSizeToBytes(s string) int64 {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" || s == "N/A" {
+		return 0
+	}
+	s = strings.ReplaceAll(s, " ", "")
+	// Longest suffix first: GB before MB before KB.
+	for _, u := range []struct {
+		suffix string
+		factor int64
+	}{
+		{"GB", 1024 * 1024 * 1024},
+		{"MB", 1024 * 1024},
+		{"KB", 1024},
+	} {
+		if strings.HasSuffix(s, u.suffix) {
+			f, err := strconv.ParseFloat(s[:len(s)-len(u.suffix)], 64)
+			if err != nil {
+				return 0
+			}
+			return int64(f * float64(u.factor))
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// IsAudioFormat reports whether ext (lowercased, no dot) is an audiobook
+// extension.
+func IsAudioFormat(ext string) bool {
+	for _, a := range audioFormats {
+		if ext == a {
+			return true
+		}
+	}
+	return false
+}
+
+// IsEbookFormat reports whether ext (lowercased, no dot) is an ebook
+// extension. It is the parser's fileTypes list (minus the "jpg" the bot
+// sometimes reports for image books) plus fb2, which the library pipeline
+// handles but the parser does not list.
+func IsEbookFormat(ext string) bool {
+	for _, f := range fileTypes {
+		if f == "jpg" {
+			continue
+		}
+		if ext == f {
+			return true
+		}
+	}
+	return ext == "fb2"
 }
