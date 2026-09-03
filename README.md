@@ -4,7 +4,7 @@ openbooks is an IRC/DCC ebook downloader: it searches the #bookz channel on
 irc.irchighway.net via the channel search bot and downloads matched books
 over DCC transfers. A React web UI is served from the same process.
 
-This tree is the PotatoStack patched line, version 5.2.0, built as the
+This tree is the PotatoStack patched line, version 5.4.0, built as the
 openbooks:local image. Upstream base: evan-buss/openbooks at v4.5.0. The
 patch line adds:
 
@@ -26,6 +26,18 @@ patch line adds:
   /api/v1/feeds/atom), the OPDS 1.0 catalog of the local library (GET
   /opds with ?search=), and the unified multi-source search (POST
   /api/v1/search/unified over IRC + Prowlarr with per-source status)
+- the v5.3.0 hardening + observability line: scoped bearer tokens
+  (OPENBOOKS_SCOPED_TOKENS), the search-result TTL cache (stats +
+  clean), quality filters (format/language/maxSize/prefer) on search
+  + wanted, cross-source result dedupe (dedupGroup), per-job download
+  tracking + retry (GET /api/v1/jobs, POST /api/v1/jobs/{id}/retry),
+  sha256 verification (POST /api/v1/verify), and the wanted entry's
+  failed-release lifecycle (backoff, staleSince, seenReleases,
+  withSidecar)
+- the v5.4.0 web UI line: the web app exposes the v5.2/v5.3 API
+  (Wanted watchlist with the lifecycle state, the download job log
+  with retry) as first-class views; the sidebar is History / Wanted /
+  Jobs / Library
 - runtime-mutable settings (GET/PUT /api/v1/settings)
 - an embedded OpenAPI document at GET /openapi.json
 - Go test suites

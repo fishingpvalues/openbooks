@@ -22,7 +22,9 @@ import { toggleDrawer } from "../../state/notificationSlice";
 import { toggleSidebar } from "../../state/stateSlice";
 import { useAppDispatch, useAppSelector } from "../../state/store";
 import History from "./History";
+import Jobs from "./Jobs";
 import Library from "./Library";
+import Wanted from "./Wanted";
 
 const useStyles = createStyles((theme) => ({
   footer: {
@@ -33,6 +35,13 @@ const useStyles = createStyles((theme) => ({
   }
 }));
 
+// Four views: the existing history (one-shot searches) and library, plus
+// the v5.3.0 acquisition layer (the wanted watchlist and the download
+// job log). The localStorage key survives the tab-set change; a saved
+// value that is no longer a tab falls back to history.
+type SidebarTab = "history" | "wanted" | "jobs" | "books";
+const TABS: SidebarTab[] = ["history", "wanted", "jobs", "books"];
+
 export default function Sidebar() {
   const { classes } = useStyles();
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
@@ -42,10 +51,11 @@ export default function Sidebar() {
   const username = useAppSelector((store) => store.state.username);
   const opened = useAppSelector((store) => store.state.isSidebarOpen);
 
-  const [index, setIndex] = useLocalStorage<"books" | "history">({
+  const [index, setIndex] = useLocalStorage<SidebarTab>({
     key: "sidebar-state",
     defaultValue: "history"
   });
+  const tab: SidebarTab = TABS.includes(index) ? index : "history";
 
   if (!opened) {
     return <></>;
@@ -92,18 +102,23 @@ export default function Sidebar() {
               fontSize: theme.fontSizes.xs
             }
           })}
-          value={index}
-          onChange={(value: "books" | "history") => setIndex(value)}
+          value={tab}
+          onChange={(value: SidebarTab) => setIndex(value)}
           data={[
-            { label: "Search History", value: "history" },
-            { label: "Previous Downloads", value: "books" }
+            { label: "History", value: "history" },
+            { label: "Wanted", value: "wanted" },
+            { label: "Jobs", value: "jobs" },
+            { label: "Library", value: "books" }
           ]}
           fullWidth
         />
       </AppShell.Section>
 
       <AppShell.Section grow p="xs" style={{ overflow: "auto" }}>
-        {index === "history" ? <History /> : <Library />}
+        {tab === "history" && <History />}
+        {tab === "wanted" && <Wanted />}
+        {tab === "jobs" && <Jobs />}
+        {tab === "books" && <Library />}
       </AppShell.Section>
 
       <AppShell.Section className={classes.footer} p="sm">

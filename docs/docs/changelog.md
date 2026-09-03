@@ -1,3 +1,16 @@
+# [v5.4.0] - 2026-09-03
+
+## Added
+- **The web UI line.** The web app now drives the v5.2/v5.3 acquisition API instead of only the v4.5 surface (one-shot IRC search + the v1 library). The sidebar is four views: History (one-shot search results + the search-cache strip), **Wanted** (the watchlist), **Jobs** (the download log), Library (previous downloads).
+  - **Search page: the unified multi-source search** (v5.2.0 API). A "+ Prowlarr" toggle: off = the existing one-shot IRC websocket search (untouched); on = `POST /api/v1/search/unified` (IRC + Prowlarr in one REST call) with per-source status chips (ok / not-configured / rate-limited / busy / error, hit counts) and a `UnifiedTable` of the normalized results: the IRC leg's rows carry a Download button (the `!`-prefixed BookID through the shared session), the Prowlarr leg's rows a Magnet button (the operator's torrent client), and `dedupGroup > 1` marks the same book surfaced by several sources.
+  - **Wanted view** (`server/app/src/components/sidebar/Wanted.tsx`): a form to add a watchlist entry (`POST /api/v1/wanted`) with `autoFetch` and `withSidecar` switches plus the v5.3.0 **quality filters** (a "Filters" expander: formats comma-list, language, max size MB, prefer ebook/audiobook - sent as the `QualityFilters` body and persisted on the entry so poll rounds re-search the same shape), plus a one-shot Search button (the existing IRC search - kept distinct from "watch" because the two paths have very different lifetimes). Each entry is a card with a status badge (`matched` green / `stale` yellow / `watching` brand) and a details menu: added/matched dates, next poll time (backoff), attempts, consecutive no-match rounds, releases seen, auto-fetch/sidecar flags, and the persisted quality filters (human-readable). Delete = `DELETE /api/v1/wanted/{query}`.
+  - **Jobs view** (`server/app/src/components/sidebar/Jobs.tsx`): the download job log (`GET /api/v1/jobs`, newest first, 30 shown, 15 s poll). Each job is a card with a status badge (requested/downloading/completed/failed) and a menu: timeline, retries, sha256 with copy-to-clipboard, a **Re-request** button for failed/completed jobs (`POST /api/v1/jobs/{id}/retry`), and a **Verify sha256** button for completed jobs with a file name (`POST /api/v1/verify` with `recompute=true`).
+  - **History view: the search-cache strip** (v5.3.0 API) - `entries / hits / misses / ttl` (30 s poll) with a clean button (`POST /api/v1/search-cache/clean`); the cache is off by default and the strip reports `ttl 0s` plainly.
+  - `state/api.ts` gained the v5.x RTK Query endpoints + types (`WantedItem`, `DownloadJob`, `QualityFilters`, `SearchCacheStats`, `UnifiedResult`, `UnifiedSourceStatus`, `VerifyResponse`): `getWanted`/`addWanted`/`deleteWanted`, `getJobs`/`retryJob`/`verifyBook`, `getSearchCache`/`cleanSearchCache`, `unifiedSearch`. No server change - the web app is a consumer of the existing `openapi.json` contract; the token gate is unchanged.
+
+## Changed
+- `GET /api/v1/health` reports `5.4.0`; `server/openapi.json` info.version is `5.4.0` (the drift test pins the new version string; the path set is unchanged - no new REST paths).
+
 # [v5.3.0] - 2026-09-03
 
 ## Added

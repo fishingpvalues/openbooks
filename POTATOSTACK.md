@@ -1,10 +1,73 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.3.0 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.4.0 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.4.0 (2026-09-03) - web UI line (the acquisition API gets a face)
+
+The v5.2.0/v5.3.0 acquisition API was built and tested over REST but the web
+app still only drove the v4.5 surface (one-shot IRC search + the v1
+library). This line wires the web app to the v5.x API so the operator can
+drive the acquisition layer without a curl. No server change - it is a
+consumer of the existing `openapi.json` contract.
+
+- **Sidebar is now four views.** History (one-shot search results + the
+  search-cache strip), **Wanted** (the watchlist), **Jobs** (the download
+  log), Library (previous downloads). The `sidebar-state` localStorage key
+  survives the tab-set change; a saved value that is no longer a tab falls
+  back to History.
+- **Search page: the unified multi-source search** (v5.2.0 API). A
+  "+ Prowlarr" toggle: off = the existing one-shot IRC websocket search
+  (untouched); on = `POST /api/v1/search/unified` (IRC + Prowlarr in one
+  REST call) with per-source status chips (ok / not-configured /
+  rate-limited / busy / error, hit counts) and a `UnifiedTable` of the
+  normalized results: the IRC leg's rows carry a Download button (the
+  `!`-prefixed BookID through the shared session), the Prowlarr leg's rows
+  a Magnet button (the operator's torrent client), and `dedupGroup > 1`
+  marks the same book surfaced by several sources.
+- **Wanted view** (`server/app/src/components/sidebar/Wanted.tsx`). A form
+  to add a watchlist entry (`POST /api/v1/wanted`) with `autoFetch` and
+  `withSidecar` switches plus the v5.3.0 **quality filters** (a "Filters"
+  expander: formats comma-list, language, max size MB, prefer
+  ebook/audiobook - sent as the `QualityFilters` body and persisted on the
+  entry so poll rounds re-search the same shape), and a one-shot Search
+  button (the existing IRC search, kept distinct from "watch" because the
+  two have very different lifetimes). Each entry is a card with a status
+  badge - `matched` (green), `stale` (yellow), `watching` (brand) - and a
+  details menu showing added/matched dates, the next poll time (backoff),
+  attempts, consecutive no-match rounds, releases seen, auto-fetch/sidecar
+  flags, and the persisted quality filters (human-readable, e.g. "epub,
+  pdf · german · ≤ 50 MB · ebook"). Delete = `DELETE /api/v1/wanted/{query}`.
+- **Jobs view** (`server/app/src/components/sidebar/Jobs.tsx`). Lists the
+  download job log (`GET /api/v1/jobs`, newest first, 30 shown, 15 s poll).
+  Each job is a card with a status badge (requested/downloading/completed/
+  failed) and a menu with the timeline, retries, sha256 (copy-to-clipboard),
+  a **Re-request** button for failed/completed jobs
+  (`POST /api/v1/jobs/{id}/retry`), and a **Verify sha256** button for
+  completed jobs with a file name (`POST /api/v1/verify` with
+  `recompute=true` - the result toast reports ok/mismatch/missing and the
+  hash).
+- **History view: the search-cache strip** (v5.3.0 API) - `entries / hits /
+  misses / ttl` (30 s poll) with a clean button
+  (`POST /api/v1/search-cache/clean`); the cache is off by default, and the
+  strip reports `ttl 0s` plainly instead of implying caching is on.
+- **`state/api.ts` extended** with the v5.x RTK Query endpoints and types
+  (`WantedItem`, `DownloadJob`, `QualityFilters`, `SearchCacheStats`,
+  `UnifiedResult`, `UnifiedSourceStatus`, `UnifiedSearchResponse`,
+  `VerifyResponse`): `getWanted`/`addWanted`/`deleteWanted`, `getJobs`/
+  `retryJob`/`verifyBook`, `getSearchCache`/`cleanSearchCache`,
+  `unifiedSearch`. The `wanted`/`jobs`/`searchCache` tags invalidate on
+  their respective mutations.
+- Frontend gates: `tsc && vite build` exit 0; the Docker image's web stage
+  builds the new views. No Go test surface changed (the drift test still
+  pins the v5.3.0 paths; no new REST paths were added).
+- Version: `5.4.0` (`cmd/openbooks/main.go`, `server/openapi.json` info.version,
+  and the pinned version strings in `server/integrations_test.go` and
+  `server/api_test.go` - the version is pinned in FOUR files, the drift
+  test alone does not catch the boundary test's pin).
 
 ## v5.3.0 (2026-09-03) - hardening + observability line (research-driven)
 
