@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +63,124 @@ func (p *ParseError) MarshalJSON() ([]byte, error) {
 func (p ParseError) String() string {
 	return fmt.Sprintf("Error: %s. Line: %s.", p.Error, p.Line)
 }
+
+// indexExtCI returns the byte index of the first "." + ext in line, ignoring
+// ASCII case, or -1.
+//
+// PotatoStack v5.4.5: the bots do not agree on casing. "!Bsk LeGuin, Ursula K.
+// - El mundo de Rocannon.PDF ::INFO:: 429.59KB" used to fail with "unable to
+// parse title" because fileTypes holds lowercase names and the search compared
+// bytes. Only ASCII is lowered here: strings.ToLower can change the byte length
+// for some Unicode, which would invalidate the offsets the caller slices with.
+func indexExtCI(line, ext string) int {
+	for i := 0; i+len(ext)+1 <= len(line); i++ {
+		if line[i] != '.' {
+			continue
+		}
+		match := true
+		for j := 0; j < len(ext); j++ {
+			c := line[i+1+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != ext[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+// hashLike reports whether s looks like the DCC file hash a few bots put
+// between the server name and the author: 20 to 28 characters of base64 with at
+// least one digit ("aeEcHkB1cpn6xAUQKhfedg", "tpturc+xuQRM7VT+XxKCQQ"). The
+// window is deliberately narrow so it cannot swallow a single-token author
+// ("!Bsk Tolkien - The Silmarillion.epub").
+func hashLike(s string) bool {
+	if len(s) < 20 || len(s) > 28 {
+		return false
+	}
+	digit := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '+', c == '/':
+		default:
+			return false
+		}
+	}
+	return digit
+}
+
+// stripLeadingHash removes a "<hash> - " field sitting between the server and
+// the author, keeping the "!Server " prefix so getServer still works. Without
+// it the hash reads as the author and the title swallows the author.
+func stripLeadingHash(line string) string {
+	firstSpace := strings.Index(line, " ")
+	if firstSpace == -1 {
+		return line
+	}
+	sep := strings.Index(line[firstSpace:], " - ")
+	if sep == -1 {
+		return line
+	}
+	sep += firstSpace
+	if !hashLike(line[firstSpace+1 : sep]) {
+		return line
+	}
+	return line[:firstSpace+1] + line[sep+len(" - "):]
+}
+
+// parenFormat returns the index of a "(FORMAT)" token after start whose inner
+// text is a known file type, plus that type. Bots that omit the dotted
+// extension report the format in parentheses before the size instead
+// ("... Ficciones [eng]  (AZW3) 419.4 KB - [...]").
+func parenFormat(line string, start int) (int, string) {
+	for i := start; i < len(line); i++ {
+		if line[i] != '(' {
+			continue
+		}
+		end := strings.IndexByte(line[i:], ')')
+		if end == -1 {
+			return -1, ""
+		}
+		inner := strings.ToLower(strings.TrimSpace(line[i+1 : i+end]))
+		for _, ext := range fileTypes {
+			if inner == ext {
+				return i, ext
+			}
+		}
+	}
+	return -1, ""
+}
+
+// trimLangMarker drops a trailing "[eng]" language marker that sits between the
+// title and the parenthesised format. It only touches short bracket tokens, so
+// a title that genuinely ends in brackets survives.
+func trimLangMarker(title string) string {
+	if !strings.HasSuffix(title, "]") {
+		return title
+	}
+	open := strings.LastIndex(title, "[")
+	if open == -1 {
+		return title
+	}
+	inner := strings.TrimSpace(title[open+1 : len(title)-1])
+	if inner == "" || len(inner) > 8 || strings.ContainsAny(inner, "[]") {
+		return title
+	}
+	return strings.TrimSpace(title[:open])
+}
+
+// spacedSize matches a size the bots write with a space ("419.4 KB") on lines
+// that carry no " ::INFO:: " block at all.
+var spacedSize = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*([kKmMgG]?[bB])\b`)
 
 // ParseSearchFile converts a single search file into an array of BookDetail
 func ParseSearchFile(filePath string) ([]BookDetail, []ParseError, error) {
@@ -237,7 +356,7 @@ func parseLineV2(line string) (BookDetail, error) {
 
 		// Get the Title
 		for _, ext := range fileTypes { //Loop through each possible file extension we've got on record
-			endTitle := strings.Index(line, "."+ext) // check if it contains our extension
+			endTitle := indexExtCI(line, ext) // check if it contains our extension
 			if endTitle == -1 {
 				continue
 			}
@@ -253,17 +372,37 @@ func parseLineV2(line string) (BookDetail, error) {
 			endIndex = endTitle
 		}
 
+		if endIndex == -1 {
+			// No dotted extension anywhere on the line. Some bots report the
+			// format in parentheses and put a language marker in brackets
+			// after the title instead.
+			if at, ext := parenFormat(line, titleStart); at != -1 {
+				fileFormat = ext
+				title = trimLangMarker(strings.TrimSpace(line[titleStart:at]))
+				endIndex = at
+			}
+		}
+
 		return title, fileFormat, endIndex
 	}
 
-	getSize := func(line string) (string, int) {
+	getSize := func(line string, after int) (string, int) {
 		const delimiter = " ::INFO:: "
 		infoIndex := strings.LastIndex(line, delimiter)
 
 		if infoIndex != -1 {
 			// Handle cases when there is additional info after the file size (ex ::HASH:: )
 			parts := strings.Split(line[infoIndex+len(delimiter):], " ")
-			return parts[0], infoIndex
+			// Trailing punctuation is common on these lines ("429.59KB.").
+			return strings.Trim(parts[0], ".,;:"), infoIndex
+		}
+
+		// No INFO block. Bots in that shape still report a size ("419.4 KB"),
+		// and only a match AFTER the title may be used: Full is the line the
+		// Download button sends to the bot, so cutting inside a title would
+		// produce a broken request.
+		if m := spacedSize.FindStringSubmatchIndex(line); m != nil && m[0] >= after {
+			return line[m[2]:m[3]] + line[m[4]:m[5]], m[0]
 		}
 
 		return "N/A", len(line)
@@ -273,6 +412,13 @@ func parseLineV2(line string) (BookDetail, error) {
 	if err != nil {
 		return BookDetail{}, err
 	}
+
+	// Some bots prefix the DCC file hash ("!Ashurbanipal <hash> - Author - ...").
+	// Full is rebuilt from the ORIGINAL line below, so the hash - which is part
+	// of the request the bot expects - survives the author/title fix.
+	original := line
+	line = stripLeadingHash(line)
+	hashOffset := len(original) - len(line)
 
 	author, err := getAuthor(line)
 	if err != nil {
@@ -284,7 +430,12 @@ func parseLineV2(line string) (BookDetail, error) {
 		return BookDetail{}, errors.New("unable to parse title")
 	}
 
-	size, endIndex := getSize(line)
+	size, endIndex := getSize(line, titleIndex)
+
+	fullEnd := endIndex + hashOffset
+	if fullEnd > len(original) {
+		fullEnd = len(original)
+	}
 
 	return BookDetail{
 		Server: server,
@@ -292,7 +443,7 @@ func parseLineV2(line string) (BookDetail, error) {
 		Title:  title,
 		Format: format,
 		Size:   size,
-		Full:   strings.TrimSpace(line[:endIndex]),
+		Full:   strings.TrimSpace(original[:fullEnd]),
 	}, nil
 }
 

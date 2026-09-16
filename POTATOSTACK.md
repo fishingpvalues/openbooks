@@ -1,10 +1,42 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.4.4 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.4.5 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.4.5 (2026-09-16) - one result line in seven now parses
+
+A live `le guin` search returned 862 books and **138 parse errors**. Those lines
+are not junk - they are the bots' other output shapes, and until now they were
+dropped from every search:
+
+    !Ashurbanipal aeEcHkB1cpn6xAUQKhfedg - Jorge Luis Borges & Anthony Kerrigan - Ficciones [eng]  (AZW3) 419.4 KB - [Fiction, Short Stories (Single Author)].
+    !Bsk LeGuin, Ursula K. - El mundo de Rocannon.PDF ::INFO:: 429.59KB.
+    !Horla Le Guin & Ursula K. - Winter's King (v1.0).RTF.
+
+Three separate causes:
+
+- **The extension search was case sensitive.** `fileTypes` holds lowercase
+  names and the parser compared bytes, so `.PDF`, `.RTF` and `.EPUB` all ended
+  in "unable to parse title". `indexExtCI` compares ASCII case-insensitively
+  (only ASCII - `strings.ToLower` can change byte length, which would invalidate
+  the offsets the caller slices with).
+- **Some bots do not print a dotted extension at all** - they put the format in
+  parentheses before the size (`(AZW3)`). Those lines now take the parenthesised
+  format as the title terminator, and a trailing `[eng]` language marker is
+  dropped from the title.
+- **Some bots prefix the DCC file hash** (`!Ashurbanipal <hash> - Author -
+  Title`). The hash was read as the author and the author as part of the title.
+  `stripLeadingHash` removes it when it is hash-shaped (20-28 base64 characters
+  with a digit - narrow enough that a single-token author like `Tolkien` or a
+  13-character name stays put), while `Full` is still rebuilt from the ORIGINAL
+  line so the hash the bot expects survives in the download request.
+
+Sizes on lines without a ` ::INFO:: ` block are picked up too (`419.4 KB`), but
+only from a match that sits AFTER the title end, because `Full` is what the
+Download button sends and a cut inside the title would produce a broken request.
 
 ## v5.4.4 (2026-09-16) - the REST session survives the UI holding the nick
 

@@ -1,3 +1,13 @@
+# [v5.4.5] - 2026-09-16
+
+## Fixed
+- **Roughly one result line in seven was dropped as a parse error** (a live `le guin` search: 862 books and 138 errors). Three shapes: file extensions in uppercase (`.PDF`, `.RTF`, `.EPUB`) failed because the extension search compared bytes against the lowercase `fileTypes` list; bots that report the format in parentheses (`(AZW3)`) and no dotted extension parsed as "unable to parse title"; and bots that prefix the DCC file hash had the hash read as the author and the author swallowed into the title.
+- Result sizes are taken from the `419.4 KB` style fields on lines without a ` ::INFO:: ` block, and trailing punctuation is trimmed from sizes (`429.59KB.` -> `429.59KB`).
+
+## Changed
+- `Full` (the line the Download button sends to the bot) keeps the DCC hash on hash-prefixed lines and is never cut inside the title.
+- `GET /api/v1/health` reports `5.4.5`; `server/openapi.json` info.version is `5.4.5`.
+
 # [v5.4.4] - 2026-09-16
 
 ## Fixed
