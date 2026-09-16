@@ -203,6 +203,12 @@ type DownloadJob struct {
 	SHA256       string `json:"sha256,omitempty"`
 	WithSidecar  bool   `json:"withSidecar,omitempty"`
 	FailedDetail string `json:"failedDetail,omitempty"`
+
+	// Source is "api" for a POST /api/v1/download request and "ui" for a
+	// Download clicked in the web UI (the websocket session). v5.4.3: the UI
+	// path was previously untracked, so the Jobs view stayed empty after a
+	// successful download.
+	Source string `json:"source,omitempty"`
 }
 
 // DownloadedBook is the v5.1.2 completion-log entry (GET /api/v1/downloads).
@@ -481,6 +487,90 @@ func (state *apiState) matchPendingJob(plain string) *DownloadJob {
 		}
 	}
 	return fallback
+}
+
+// addJobLocked records one download request (source "api" or "ui"). The caller
+// holds state.mu. The log is bounded to the 256 newest: the completion log is
+// bounded by the library, but a caller can request 10k books.
+func (state *apiState) addJobLocked(book, source string, withSidecar bool) *DownloadJob {
+	jobID := uuid.New().String()
+	job := &DownloadJob{
+		ID:          jobID,
+		Book:        book,
+		Status:      "requested",
+		RequestedAt: time.Now().UTC().Format(time.RFC3339),
+		WithSidecar: withSidecar,
+		Source:      source,
+	}
+	state.jobs[jobID] = job
+	if len(state.jobs) > 256 {
+		ids := make([]string, 0, len(state.jobs))
+		dates := map[string]string{}
+		for id, j := range state.jobs {
+			ids = append(ids, id)
+			dates[id] = j.RequestedAt
+		}
+		sort.Slice(ids, func(i, j int) bool { return dates[ids[i]] < dates[ids[j]] })
+		for i := 0; i < len(state.jobs)-256; i++ {
+			delete(state.jobs, ids[i])
+		}
+	}
+	return job
+}
+
+// recordUIDownload opens the job row for a download requested from the web UI
+// (the websocket session). v5.4.3: before this, only POST /api/v1/download
+// wrote a job, so a Download clicked in the UI left the library as its only
+// trace - the Jobs view stayed empty after a successful download.
+func (server *server) recordUIDownload(book string) {
+	if strings.TrimSpace(book) == "" {
+		return
+	}
+	state := server.api
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.addJobLocked(book, "ui", false)
+}
+
+// completeUIDownload closes the matching source=ui job when a websocket DCC
+// transfer lands. Deliberately NOT recordAPIDownload: that one also drains the
+// download-completion callback FIFO, which belongs to the api session's request
+// order - a UI completion consuming it would fire some API caller's webhook for
+// the wrong book. Only source=ui rows are touched here.
+func (server *server) completeUIDownload(name string) {
+	plain := normalizeBookFile(name)
+	if plain == "" {
+		return
+	}
+	state := server.api
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	// Same matching shape as matchPendingJob: the requested identifier carries
+	// the DCC server prefix ("!Bsk <file>") that the landed file name does not,
+	// so the exact name is only the first attempt. The fallback is the oldest
+	// pending ui row - the single websocket session transfers books in request
+	// order, which is the guarantee the api session relies on too.
+	var target *DownloadJob
+	for _, j := range state.jobs {
+		if j.Source != "ui" || j.Status != "requested" {
+			continue
+		}
+		if normalizeBookFile(j.Book) == plain {
+			target = j
+			break
+		}
+		if target == nil || j.RequestedAt < target.RequestedAt {
+			target = j
+		}
+	}
+	if target == nil {
+		return
+	}
+	target.Status = "completed"
+	target.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+	target.FileName = plain
+	target.LibraryPath = "/api/v1/library/" + strings.ReplaceAll(plain, " ", "%20")
 }
 
 // fireDownloadCallback POSTs the download-completion webhook. Best effort:
@@ -1174,36 +1264,14 @@ func (server *server) downloadHandler() http.HandlerFunc {
 		state := server.api
 		recordAPIIRCSession()
 
-		// v5.3.0: the job record (one per request). The id is the
-		// request's identity for GET /api/v1/jobs and the retry endpoint.
-		jobID := uuid.New().String()
-		now := time.Now().UTC().Format(time.RFC3339)
+		// v5.3.0: the job record (one per request); the id is the request's
+		// identity for GET /api/v1/jobs and the retry endpoint.
+		// v5.4.3: the row is built by addJobLocked, which the UI request path
+		// shares, so both paths land in the same log with a source marker.
 		var client *Client
 		state.mu.Lock()
 		client = state.client
-		state.jobs[jobID] = &DownloadJob{
-			ID:          jobID,
-			Book:        req.Book,
-			Status:      "requested",
-			RequestedAt: now,
-			WithSidecar: req.WithSidecar,
-		}
-		// Bound the job log (the completion log is bounded by the library;
-		// the job log is not - a caller can request 10k books). Keep the
-		// 256 newest.
-		if len(state.jobs) > 256 {
-			ids := make([]string, 0, len(state.jobs))
-			dates := map[string]string{}
-			for id, j := range state.jobs {
-				ids = append(ids, id)
-				dates[id] = j.RequestedAt
-			}
-			sort.Slice(ids, func(i, j int) bool { return dates[ids[i]] < dates[ids[j]] })
-			drop := len(state.jobs) - 256
-			for i := 0; i < drop; i++ {
-				delete(state.jobs, ids[i])
-			}
-		}
+		jobID := state.addJobLocked(req.Book, "api", req.WithSidecar).ID
 		// Queue the completion webhook (FIFO): the api IRC session handles
 		// book DCC transfers in request order, so recordAPIDownload
 		// delivers this to the oldest queued callback when the book lands.

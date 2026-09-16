@@ -11,7 +11,7 @@ import (
 func (server *server) NewIrcEventHandler(client *Client) core.EventHandler {
 	handler := core.EventHandler{}
 	handler[core.SearchResult] = client.searchResultHandler(server.config.DownloadDir)
-	handler[core.BookResult] = client.bookResultHandler(server.config.DownloadDir, server.config.DisableBrowserDownloads)
+	handler[core.BookResult] = client.bookResultHandler(server, server.config.DownloadDir, server.config.DisableBrowserDownloads)
 	handler[core.NoResults] = client.noResultsHandler
 	handler[core.BadServer] = client.badServerHandler
 	handler[core.SearchAccepted] = client.searchAcceptedHandler
@@ -63,7 +63,11 @@ func (c *Client) searchResultHandler(downloadDir string) core.HandlerFunc {
 }
 
 // bookResultHandler downloads the book file and sends it over the websocket
-func (c *Client) bookResultHandler(downloadDir string, disableBrowserDownloads bool) core.HandlerFunc {
+//
+// v5.4.3: a websocket completion closes the UI job row here. The api client
+// keeps its own path (routeAPIMessage -> recordAPIDownload, which also drains
+// the callback FIFO), so this hook only fires for browser clients.
+func (c *Client) bookResultHandler(server *server, downloadDir string, disableBrowserDownloads bool) core.HandlerFunc {
 	return func(text string) {
 		extractedPath, err := core.DownloadExtractDCCString(filepath.Join(downloadDir, "books"), text, nil)
 		if err != nil {
@@ -73,6 +77,9 @@ func (c *Client) bookResultHandler(downloadDir string, disableBrowserDownloads b
 		}
 
 		c.log.Printf("Sending book entitled '%s'.\n", filepath.Base(extractedPath))
+		if c.uuid != apiClientID {
+			server.completeUIDownload(filepath.Base(extractedPath))
+		}
 		c.send <- newDownloadResponse(extractedPath, disableBrowserDownloads)
 	}
 }

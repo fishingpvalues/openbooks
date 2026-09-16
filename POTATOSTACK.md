@@ -1,10 +1,44 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.4.2 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.4.3 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.4.3 (2026-09-16) - UI downloads are tracked, and the watchlist is clickable
+
+Two gaps that only showed up while driving the real UI.
+
+### A Download clicked in the UI left no trace
+
+The Download button in a search result runs over the WEBSOCKET session, so it
+never touched the v5.3.0 job log - `GET /api/v1/jobs` said `[]` right after a
+successful download (`CLIENT (potatobooks): Sending book entitled '...'` in the
+log, the file in the library) and the Jobs view stayed at "No download jobs
+yet.". Jobs only ever contained `POST /api/v1/download` requests.
+
+- `apiState.addJobLocked(book, source, withSidecar)` is now the single place a
+  job row is built (the API handler used to inline it), and `DownloadJob`
+  carries `source` ("api" or "ui").
+- `recordUIDownload` opens the row from the websocket request path.
+- `completeUIDownload` closes it when the DCC transfer lands, called from
+  `bookResultHandler` for browser clients only.
+
+`completeUIDownload` is deliberately NOT `recordAPIDownload`: that one also
+drains the completion-callback FIFO, which belongs to the api session's
+REQUEST ORDER, so a UI completion consuming it would fire some API caller's
+webhook for the wrong book. Only `source=ui` rows are touched, and
+`server/uidownload_test.go` pins both halves.
+
+### "Stop watching" was only reachable with a mouse
+
+The watchlist card hid the delete action in a Mantine context menu. That menu
+opens on a real pointer sequence, so a scripted/headless click cannot reach it
+(measured: synthetic `click()`, dispatched `PointerEvent`s and the CDP input
+path all leave it closed or time out), and two clicks for the one destructive
+action was poor anyway. The card now carries a visible trash `ActionIcon` next
+to it, calling the same mutation; the menu item stays.
 
 ## v5.4.2 (2026-09-16) - the failures now say what went wrong
 

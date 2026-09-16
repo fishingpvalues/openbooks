@@ -41,7 +41,12 @@ func (server *server) routeMessage(message Request, c *Client) {
 	case SEARCH:
 		c.sendSearchRequest(obj.(*SearchRequest), server)
 	case DOWNLOAD:
-		c.sendDownloadRequest(obj.(*DownloadRequest))
+		req := obj.(*DownloadRequest)
+		// v5.4.3: a download requested from the UI gets a job row like an API
+		// one, so GET /api/v1/jobs (and the Jobs view) shows it. Before this,
+		// the library was the only trace of a successful UI download.
+		server.recordUIDownload(req.Book)
+		c.sendDownloadRequest(req)
 	default:
 		server.log.Println("Unknown request type received.")
 	}

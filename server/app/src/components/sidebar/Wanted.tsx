@@ -1,4 +1,5 @@
 import {
+  ActionIcon,
   Badge,
   Button,
   Center,
@@ -320,7 +321,21 @@ function WantedCard({ item }: WantedCardProps) {
   const matched = !!item.matchedAt;
   const stale = !!item.staleSince;
 
+  // v5.4.3: a visible control, not only the context menu. The menu opens on a
+  // real pointer sequence only (a scripted or headless click cannot reach it),
+  // and burying the one destructive action two clicks deep was unfriendly
+  // anyway.
+  const stopWatching = () =>
+    deleteWanted(item.query).then(() =>
+      showNotification({
+        title: "Removed from watch",
+        message: item.query,
+        color: "yellow"
+      })
+    );
+
   return (
+    <Group gap={4} wrap="nowrap">
     <Menu shadow="md">
       <Menu.Target>
         <Tooltip
@@ -407,18 +422,21 @@ function WantedCard({ item }: WantedCardProps) {
         <Menu.Item
           color="red"
           leftSection={<Trash size={16} weight="bold" />}
-          onClick={() =>
-            deleteWanted(item.query).then(() =>
-              showNotification({
-                title: "Removed from watch",
-                message: item.query,
-                color: "yellow"
-              })
-            )
-          }>
+          onClick={stopWatching}>
           Stop watching
         </Menu.Item>
       </Menu.Dropdown>
     </Menu>
+
+      <Tooltip label="Stop watching">
+        <ActionIcon
+          variant="subtle"
+          color="red"
+          aria-label={`Stop watching ${item.query}`}
+          onClick={stopWatching}>
+          <Trash size={16} weight="bold" />
+        </ActionIcon>
+      </Tooltip>
+    </Group>
   );
 }

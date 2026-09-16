@@ -1,3 +1,14 @@
+# [v5.4.3] - 2026-09-16
+
+## Fixed
+- **A download requested from the web UI is now tracked.** The Download button in a result row runs over the websocket session, so it never reached the v5.3.0 job log: `GET /api/v1/jobs` returned `[]` right after a successful UI download and the Jobs view said "No download jobs yet." while the file landed in the library. `DownloadJob` gained `source` ("api" | "ui"), `apiState.addJobLocked` is now the single constructor for a job row (shared by both request paths), `recordUIDownload` opens the UI row and `completeUIDownload` closes it from the websocket completion hook. The completion is deliberately separate from `recordAPIDownload`, which drains the api session's completion-callback FIFO in request order - a UI completion must not consume an API caller's callback.
+
+## Added
+- **A visible "stop watching" control on each watchlist card.** It was only in the card's context menu, which opens on a real pointer sequence (unreachable for a scripted or headless click) and hid the one destructive action two clicks deep. The card now has a trash `ActionIcon` calling the same mutation; the menu item remains.
+
+## Changed
+- `GET /api/v1/health` reports `5.4.3`; `server/openapi.json` info.version is `5.4.3` (the drift test pins the version string; the path set is unchanged).
+
 # [v5.4.2] - 2026-09-16
 
 ## Fixed
