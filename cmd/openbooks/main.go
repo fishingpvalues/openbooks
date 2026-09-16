@@ -28,7 +28,7 @@ import (
 // after the reader detects a dead connection (previously the first search
 // after a VPN bounce silently timed out and every later search hit the
 // dead conn); /api/v1/health reports ircConnected.
-var version = "5.4.1"
+var version = "5.4.2"
 
 // We only increment ircVersion when irc admins require a fix to be made.
 // They can block / permit certain version numbers. ircVersion is the current permitted
@@ -95,6 +95,21 @@ var desktopCmd = &cobra.Command{
 func main() {
 	// Don't block if launched from explorer.
 	cobra.MousetrapHelpText = ""
+
+	// PotatoStack v5.4.2: the container healthcheck is routed around the
+	// client/server command tree on purpose. desktopCmd marks --name (the IRC
+	// nick) as a required persistent flag, so a subcommand registered there
+	// fails with `required flag(s) "name" not set` before it runs - the first
+	// build of this probe did exactly that (docker health = starting, failing
+	// streak 2). A liveness probe must not need an IRC identity.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthcheckCmd.SetArgs(os.Args[2:])
+		if err := healthcheckCmd.Execute(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := desktopCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -152,9 +152,16 @@ func (server *server) metricsHandler() http.HandlerFunc {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		// v5.4.2: the HELP/TYPE lines belong to the FAMILY, not to every
+		// label set. Repeating them per sample is a text-format error
+		// ("second HELP line for metric name") that makes a strict parser
+		// reject the WHOLE exposition - measured 2026-09-16, when
+		// node-exporter's textfile collector refused openbooks.prom for
+		// exactly this metric and the service looked monitored while
+		// nothing was being collected.
+		fmt.Fprintf(w, "# HELP openbooks_http_requests_total API requests by response status\n")
+		fmt.Fprintf(w, "# TYPE openbooks_http_requests_total counter\n")
 		for _, code := range keys {
-			fmt.Fprintf(w, "# HELP openbooks_http_requests_total API requests by response status\n")
-			fmt.Fprintf(w, "# TYPE openbooks_http_requests_total counter\n")
 			fmt.Fprintf(w, "openbooks_http_requests_total{status=%q} %d\n", code, statuses[code])
 		}
 	}

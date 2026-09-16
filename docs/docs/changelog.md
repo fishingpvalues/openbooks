@@ -1,3 +1,15 @@
+# [v5.4.2] - 2026-09-16
+
+## Fixed
+- **A failing search says why.** `performSearch` returned a zero response when the api IRC session could not be established, so the handler wrote the empty note into the body: every connect failure was `502 {"error":""}` while the reason sat in the container log. It now returns the error as the note, and `sendSearchNow` (fire-and-forget path) gained a third return value so it reports "rate limited, retry after Ns" / "search already in flight, retry later" / the connect error instead of a blanket "search not sent". One fix covers `/api/v1/search`, `/api/v1/search/unified` (the IRC leg's `note`) and `/torznab`, which all render that note.
+
+## Added
+- **`openbooks healthcheck`** - the probe the container's compose healthcheck runs. The runtime image is distroless (no shell, no curl, no wget), so the binary is the only thing available inside the container: it GETs the local `/api/v1/health` with the configured token and exits 0 only on HTTP 200 (`--url`, `--timeout`; token from `--token`/`OPENBOOKS_TOKEN`). It checks HTTP liveness only - **never `ircConnected`**, which is legitimately false right after a restart and briefly false after a VPN bounce, so failing on it would make autoheal restart a healthy container. Session health is alerted on instead (`openbooks_irc_connected`, exported by `scripts/openbooks/openbooks-metrics.sh`).
+- `server/healthcheck.go` (+ `server/healthcheck_test.go`) and `cmd/openbooks/healthcheck.go`.
+
+## Changed
+- `GET /api/v1/health` reports `5.4.2`; `server/openapi.json` info.version is `5.4.2` (the drift test pins the version string; the path set is unchanged - no new REST paths).
+
 # [v5.4.1] - 2026-09-16
 
 ## Fixed

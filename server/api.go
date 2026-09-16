@@ -889,7 +889,12 @@ func (server *server) performSearch(query string) (APISearchResponse, int, int) 
 	state := server.api
 	if err := server.startAPIClient(); err != nil {
 		server.log.Printf("%s\n", err)
-		return APISearchResponse{}, http.StatusBadGateway, 0
+		// v5.4.2: carry the failure into the response the caller writes.
+		// Returning a zero response here made every connect failure a
+		// 502 with the body {"error":""} - the actual reason (a 433, a dead
+		// tunnel, a DNS failure) existed only in the log. The Note feeds the
+		// /api/v1/search handler, the unified IRC leg and /torznab alike.
+		return APISearchResponse{Note: err.Error()}, http.StatusBadGateway, 0
 	}
 
 	state.mu.Lock()
@@ -969,13 +974,14 @@ func (server *server) searchCacheCheckAndStore(query string, f QualityFilters) (
 // sendSearchNow fires a search at the IRC bot and returns immediately
 // (fire-and-forget). It enforces the same rate limit as performSearch but
 // does NOT arm a result waiter, so it never blocks on the result. This is
-// the wait=false path of POST /api/v1/search. It returns the HTTP status
-// and, for a 429, the seconds to wait (Retry-After).
-func (server *server) sendSearchNow(query string) (int, int) {
+// the wait=false path of POST /api/v1/search. It returns the HTTP status,
+// the seconds to wait (Retry-After) and, since v5.4.2, the reason the caller
+// should put in the error body - an empty note means the search was sent.
+func (server *server) sendSearchNow(query string) (int, int, string) {
 	state := server.api
 	if err := server.startAPIClient(); err != nil {
 		server.log.Printf("%s\n", err)
-		return http.StatusBadGateway, 0
+		return http.StatusBadGateway, 0, err.Error()
 	}
 
 	state.mu.Lock()
@@ -983,12 +989,12 @@ func (server *server) sendSearchNow(query string) (int, int) {
 	if time.Now().Before(nextAvailable) {
 		remaining := int(time.Until(nextAvailable).Seconds() + 0.5)
 		state.mu.Unlock()
-		return http.StatusTooManyRequests, remaining
+		return http.StatusTooManyRequests, remaining, fmt.Sprintf("rate limited, retry after %ds", remaining)
 	}
 	state.lastSearch = time.Now()
 	if state.pendingSearch != nil {
 		state.mu.Unlock()
-		return http.StatusConflict, 0
+		return http.StatusConflict, 0, "search already in flight, retry later"
 	}
 	state.mu.Unlock()
 
@@ -996,7 +1002,7 @@ func (server *server) sendSearchNow(query string) (int, int) {
 	// dropped if nobody is waiting - that is the fire-and-forget contract.
 	core.SearchBook(state.client.irc, server.config.SearchBot, query)
 	server.log.Printf("api search sent (async): %s\n", query)
-	return http.StatusOK, 0
+	return http.StatusOK, 0, ""
 }
 
 // normalizeQualityFilters trims, lowercases and validates a filter set so
@@ -1054,13 +1060,17 @@ func (server *server) searchHandler() http.HandlerFunc {
 		}
 
 		if !wait {
-			status, retryAfter := server.sendSearchNow(query)
+			status, retryAfter, note := server.sendSearchNow(query)
 			if status != http.StatusOK {
 				if retryAfter > 0 {
 					w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				}
 				recordAPIStatus(status)
-				writeJSONError(w, status, "search not sent")
+				// v5.4.2: the reason, not a generic sentence.
+				if note == "" {
+					note = "search not sent"
+				}
+				writeJSONError(w, status, note)
 				return
 			}
 			recordAPIStatus(http.StatusOK)

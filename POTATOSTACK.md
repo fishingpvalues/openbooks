@@ -1,10 +1,58 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.4.1 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.4.2 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.4.2 (2026-09-16) - the failures now say what went wrong
+
+Two gaps left over from the v5.4.1 session, both about a service that is
+up but not working.
+
+### The 502 body was empty
+
+`performSearch` returned a ZERO `APISearchResponse` when the api IRC session
+could not be established, and the handler writes `resp.Note` into the error
+body - so a dead session, a 433 and a broken tunnel all produced the same
+`502 {"error":""}`. The reason existed only in the container log, which is
+exactly what made the v5.4.1 hunt slow. `performSearch` (and
+`sendSearchNow`, which gained a third return value and now says "rate
+limited, retry after Ns" / "search already in flight, retry later" instead
+of a blanket "search not sent") now carry the cause; because the plain
+search handler, the unified IRC leg (`st.Note`) and `/torznab` all render
+`resp.Note`, one fix covers every surface.
+
+### The container had no healthcheck - and could not have one
+
+The runtime is distroless: no shell, no curl, no wget, so a
+`healthcheck:` had nothing to run. It has one now, implemented in the
+binary itself:
+
+```
+openbooks healthcheck [--url http://127.0.0.1:80/api/v1/health] [--timeout 5s]
+```
+
+Exit 0 only on HTTP 200; the token comes from `--token` or
+`OPENBOOKS_TOKEN`, like the server. `compose.media.yml` runs it every 30s
+with a 15s start period, and the image is labelled with its source commit.
+
+**It checks HTTP liveness only, never `ircConnected`.** The api session is
+established lazily and rebuilt after the reader sees a dead connection, so
+it is legitimately false right after a restart; a healthcheck that failed
+on it would have the stack's autoheal restart a healthy container and drop
+the session it was rebuilding. Session health is an ALERTING concern
+instead (see `scripts/openbooks/openbooks-metrics.sh` and the
+`OpenbooksIrcSessionDown` rule in `config/prometheus/alerts/`).
+
+For the same reason the metrics path is unchanged in the image: the api
+exporter on the host scrapes `GET /api/v1/metrics` with the token and
+publishes it through node-exporter's textfile collector, so the
+VictoriaMetrics side gets `openbooks_up`, `openbooks_irc_connected`,
+`openbooks_searches_total`, `openbooks_http_requests_total{status=...}` and
+friends without a new port, a new secret on another machine, or an
+unauthenticated endpoint.
 
 ## v5.4.1 (2026-09-16) - IRC registration nick fallback (the 502 cure)
 
