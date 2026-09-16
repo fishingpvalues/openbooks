@@ -1,3 +1,11 @@
+# [v5.4.6] - 2026-09-16
+
+## Fixed
+- **Audiobook results parse.** The bots report an audiobook's format as `(M4B)`, and m4b/mp3/m4a/... live in `audioFormats` rather than in the `fileTypes` list the parenthesised-format lookup searched - so 14 of the 17 lines still failing after v5.4.5 were audiobooks, surfaced to the operator as "Parsing Errors" instead of rows.
+
+## Changed
+- `GET /api/v1/health` reports `5.4.6`; `server/openapi.json` info.version is `5.4.6`.
+
 # [v5.4.5] - 2026-09-16
 
 ## Fixed

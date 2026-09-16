@@ -49,6 +49,22 @@ func TestParserHandlesBotLineShapes(t *testing.T) {
 			// reads it as the author.
 			inFull: "!Ashurbanipal aeEcHkB1cpn6xAUQKhfedg - Jorge Luis Borges & Anthony Kerrigan - Ficciones [eng]  (AZW3)",
 		},
+		{
+			name:   "parenthesised audio format",
+			line:   "!Ashurbanipal l5W4yDYozHUWCTOo+sN6hQ - Terry Pratchett - The Fifth Elephant (Penguin Audio) (audiobook) - Discworld [24] (M4B) 755.3 MB - [Science Fiction].",
+			author: "Terry Pratchett",
+			title:  "The Fifth Elephant (Penguin Audio) (audiobook) - Discworld",
+			format: "m4b",
+			size:   "755.3MB",
+		},
+		{
+			name:   "audiobook with a narrator note",
+			line:   "!Ashurbanipal qW9Nv0IXFk0+FfVo9kaDaA - Ursula K. Le Guin - Always Coming Home (audiobook) (Narrated by: Yareli Arizmendi, Isabella Star LeBlanc)  (M4B) 150.1 MB - [Audiobooks].",
+			author: "Ursula K. Le Guin",
+			title:  "Always Coming Home (audiobook) (Narrated by: Yareli Arizmendi, Isabella Star LeBlanc)",
+			format: "m4b",
+			size:   "150.1MB",
+		},
 	}
 
 	for _, c := range cases {

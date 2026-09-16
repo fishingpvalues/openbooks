@@ -156,6 +156,15 @@ func parenFormat(line string, start int) (int, string) {
 				return i, ext
 			}
 		}
+		// Audio results carry their own list (see audioFormats): m4b, mp3 and
+		// friends are deliberately not in fileTypes, so without this the
+		// audiobook hits - 14 of the 17 lines still failing after v5.4.5 - keep
+		// landing in the Parsing Errors panel.
+		for _, ext := range audioFormats {
+			if inner == ext {
+				return i, ext
+			}
+		}
 	}
 	return -1, ""
 }
@@ -180,7 +189,10 @@ func trimLangMarker(title string) string {
 
 // spacedSize matches a size the bots write with a space ("419.4 KB") on lines
 // that carry no " ::INFO:: " block at all.
-var spacedSize = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*([kKmMgG]?[bB])\b`)
+//
+// The leading \b matters: without it the "4B" inside a parenthesised format
+// token matches first, and every audiobook row reports a 4-byte size.
+var spacedSize = regexp.MustCompile(`\b(\d+(?:\.\d+)?)\s*([kKmMgG]?[bB])\b`)
 
 // ParseSearchFile converts a single search file into an array of BookDetail
 func ParseSearchFile(filePath string) ([]BookDetail, []ParseError, error) {

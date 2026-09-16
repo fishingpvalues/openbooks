@@ -1,10 +1,19 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.4.5 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.4.6 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.4.6 (2026-09-16) - the audiobook rows parse too
+
+v5.4.5 took a le-guin search from 138 parse errors to 17, and 14 of those 17 were
+audiobooks: the bots report those as "(M4B)", and m4b/mp3/... live in
+`audioFormats`, not in `fileTypes` - which is where the parenthesised-format
+lookup stopped. `parenFormat` checks both lists now. The two remaining lines are
+`.opf` metadata files, which are not books. Measured after the change: 983 books
+and 3 errors on the same query (v5.4.4: 862 and 138).
 
 ## v5.4.5 (2026-09-16) - one result line in seven now parses
 
