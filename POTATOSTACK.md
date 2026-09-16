@@ -1,10 +1,43 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.4.3 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.4.4 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.4.4 (2026-09-16) - the REST session survives the UI holding the nick
+
+The v5.4.1 nick fallback was not enough, and the way it failed was measurable.
+
+When the colliding session has the SAME user@host - which is exactly what this
+stack does to itself: the UI's websocket session and the REST /api/v1 session
+are two connections built from one configured nickname - irchighway answers
+
+    433 * potatobooks :Nickname is already in use.
+
+and then CLOSES the socket immediately (0.1s, measured from the gluetun netns
+with two connections carrying identical USER/NICK lines; the earlier belief that
+it waits out its ~10s registration timeout only holds for a colliding session
+with a different user@host). v5.4.1 renamed the candidate on that dying socket,
+so the next read returned EOF and the REST path answered
+
+    502 {"error":"api IRC connect: EOF"}
+
+while the UI searched happily with the nickname it had won. The same-name case
+is the everyday one here, so REST search - the documented automation path - was
+broken whenever a browser tab was open.
+
+- `Join` now dials again under the next candidate when the socket dies
+  mid-registration (bounded by `maxNickAttempts`), instead of only renaming on
+  the current one.
+- `nickCandidates` suffixes are RANDOM (`potatobooks_7fq2`), not the
+  deterministic `_`, `__`, `___` ladder: our own sessions picked the same
+  fallback nick as predictably as the base one, so the second session lost the
+  same race every time and the third could exhaust the ladder.
+- New tests: `TestJoinReconnectsWhenTheServerClosesAfter433` reproduces the
+  measured server behaviour against a stub that refuses and hangs up, and
+  `TestNickCandidatesShape` pins the random-suffix contract.
 
 ## v5.4.3 (2026-09-16) - UI downloads are tracked, and the watchlist is clickable
 

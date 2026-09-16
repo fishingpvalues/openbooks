@@ -1,3 +1,12 @@
+# [v5.4.4] - 2026-09-16
+
+## Fixed
+- **The REST session survives the web UI holding the configured nickname.** v5.4.1 assumed a refused nickname could be answered with an in-place `NICK` on the same socket. Measured against the live server on 2026-09-16: when the colliding session has the same user@host - this stack's own UI websocket session against its REST session, the everyday case - irchighway sends `433 * <nick>` and closes the socket in ~0.1s. The rename went nowhere, the next read returned EOF, and every REST search answered `502 {"error":"api IRC connect: EOF"}` while the UI was fine. `Join` now dials again under the next candidate when the socket dies mid-registration.
+- The candidate nicknames after the first are random-suffixed (`potatobooks_7fq2`) instead of the deterministic `_`/`__`/`___` ladder, which our own sessions selected just as predictably as the base nick.
+
+## Changed
+- `GET /api/v1/health` reports `5.4.4`; `server/openapi.json` info.version is `5.4.4`.
+
 # [v5.4.3] - 2026-09-16
 
 ## Fixed

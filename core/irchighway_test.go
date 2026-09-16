@@ -11,30 +11,9 @@ import (
 	"github.com/evan-buss/openbooks/irc"
 )
 
-func TestNickCandidates(t *testing.T) {
-	got := nickCandidates("potatobooks")
-	want := []string{
-		"potatobooks",
-		"potatobooks_",
-		"potatobooks__",
-		"potatobooks___",
-		"potatobooks____",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("nickCandidates len = %d, want %d (%v)", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("candidate %d = %q, want %q", i, got[i], want[i])
-		}
-	}
-
-	// An empty configured nick must still produce usable candidates.
-	empty := nickCandidates("  ")
-	if len(empty) == 0 || empty[0] != "openbooks" {
-		t.Errorf("empty nick candidates = %v, want openbooks first", empty)
-	}
-}
+// TestNickCandidates moved to irchighway_reconnect_test.go in v5.4.4: the
+// candidate suffixes are random now, so that file asserts the shape instead of
+// the exact `_`/`__` ladder.
 
 func TestRegistrationLineClassification(t *testing.T) {
 	cases := []struct {
@@ -102,8 +81,10 @@ func TestJoinRetriesOnNickCollision(t *testing.T) {
 		readLine()          // USER
 		first := readLine() // NICK potatobooks
 		io.WriteString(conn, ":srv 433 * potatobooks :Nickname is already in use.\r\n")
-		second := readLine() // NICK potatobooks_
-		io.WriteString(conn, ":srv 001 potatobooks_ :Welcome to the network\r\n")
+		second := readLine() // NICK potatobooks_<random>
+		// Echo back whatever nick the client chose - v5.4.4 made the fallback
+		// suffix random, so the stub cannot hard-code it.
+		io.WriteString(conn, ":srv 001 "+strings.TrimSpace(strings.TrimPrefix(second, "NICK "))+" :Welcome to the network\r\n")
 		io.WriteString(conn, "PING :srv\r\n")
 		seen <- seenLines{firstNick: first, secondNick: second, join: readLine()}
 	}()
@@ -112,8 +93,8 @@ func TestJoinRetriesOnNickCollision(t *testing.T) {
 	if err := Join(client, listener.Addr().String(), false); err != nil {
 		t.Fatalf("Join returned %v, want nil after the nick fallback", err)
 	}
-	if client.Username != "potatobooks_" {
-		t.Errorf("client.Username = %q, want the fallback nick potatobooks_", client.Username)
+	if !strings.HasPrefix(client.Username, "potatobooks_") || len(client.Username) != len("potatobooks_")+4 {
+		t.Errorf("client.Username = %q, want the random fallback nick potatobooks_<4 chars>", client.Username)
 	}
 
 	select {
@@ -121,8 +102,8 @@ func TestJoinRetriesOnNickCollision(t *testing.T) {
 		if lines.firstNick != "NICK potatobooks" {
 			t.Errorf("first NICK = %q, want \"NICK potatobooks\"", lines.firstNick)
 		}
-		if lines.secondNick != "NICK potatobooks_" {
-			t.Errorf("second NICK = %q, want the fallback \"NICK potatobooks_\"", lines.secondNick)
+		if !strings.HasPrefix(lines.secondNick, "NICK potatobooks_") {
+			t.Errorf("second NICK = %q, want a NICK for a potatobooks_* candidate", lines.secondNick)
 		}
 		if lines.join != "JOIN #ebooks" {
 			t.Errorf("after 001 the client sent %q, want \"JOIN #ebooks\"", lines.join)
