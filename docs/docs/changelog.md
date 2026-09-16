@@ -1,3 +1,15 @@
+# [v5.4.1] - 2026-09-16
+
+## Fixed
+- **IRC registration survives a nickname that is already taken.** upstream (and every v5.x line so far) sends one `NICK` and then waits for the `001` welcome; when the server answers `433 * <nick> :Nickname is already in use` instead, nothing retries. irchighway then closes the socket at its registration timeout, so the caller saw a bare `EOF`: `SERVER: api IRC connect: EOF` and every REST search answered **502 `unable to connect to IRC server`** while the web UI still reported "Welcome, connection established". This stack collides with itself systematically - the web UI opens a websocket IRC session on every page load and the shared `/api/v1` session (which the UI's own searches, the DAGs and the wanted poller use) is built from the SAME configured nick - so the failure was the default state whenever the UI was open.
+  - `core/irchighway.go`: the registration loop now handles `432`/`433`/`436` by retrying with the next nickname from `nickCandidates` (the configured nick, then underscore-suffixed variants, bounded by `maxNickAttempts`) and keeps waiting for `001`; the fallback deadline is unchanged.
+  - `irc/irc.go`: new `Conn.ChangeNick` sends `NICK` and records the name on the connection, so the UI detail, the IRC log file name and `GET /stats` show the nickname the server actually assigned.
+  - Tests: `core/irchighway_test.go` covers the candidate list, the numeric classification, and drives the real `Join` against a loopback stub that answers `433` first and `001` second.
+- **The unified search's Prowlarr leg stopped racing its own 30s budget.** Prowlarr's `/api/v1/search?type=book` round measured 29.3s, and the same 30s appeared in `server/integrations/config.go` (`defaultTimeout`), `server/integrations/http.go` (`httpTimeout`) and the per-leg context in `server/unified.go`, so about every other identical query ended in `context deadline exceeded` instead of results. All three are 60s now (IRC 259 + Prowlarr 1198 hits for "the hobbit"). The peer base URLs moved from stale bridge IPs to Docker service names in the deploy config (they resolve from the gluetun netns).
+
+## Changed
+- `GET /api/v1/health` reports `5.4.1`; `server/openapi.json` info.version is `5.4.1` (the drift test pins the version string; the path set is unchanged - no new REST paths).
+
 # [v5.4.0] - 2026-09-03
 
 ## Added

@@ -219,9 +219,11 @@ func (server *server) unifiedProwlarrLeg(query string) ([]unifiedResult, []unifi
 		st.Note = "Prowlarr base URL not set"
 		return nil, []unifiedSourceStatus{st}
 	}
-	// The 30s budget mirrors the integrations client's own defaultTimeout
-	// (30000ms): a slow peer cannot outlive the handler.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The 60s budget mirrors the integrations client's own defaultTimeout
+	// (60000ms): a slow peer cannot outlive the handler. Measured
+	// 2026-09-16: Prowlarr's book fan-out needs ~29s, so a 30s budget
+	// raced and reported "context deadline exceeded" about half the time.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	releases, err := server.integrations.Prowlarr.SearchBooks(ctx, query, "book", 0)
 	if err != nil {

@@ -1,10 +1,92 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.4.0 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.4.1 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.4.1 (2026-09-16) - IRC registration nick fallback (the 502 cure)
+
+Measured live on potatostack: every `POST /api/v1/search` answered
+**502 `unable to connect to IRC server`** (`{"error":""}`) after ~10s, the
+log showed `SERVER: api IRC connect: EOF`, and `GET /api/v1/health`
+reported `ircConnected: false` - while the web UI happily said "Welcome,
+connection established" and `GET /stats` listed a live client. The
+container was up, the UI was up, the search was dead: the
+"healthy-but-broken" shape.
+
+### What it actually was
+
+`GET /stats` listed one websocket client holding the nick `potatobooks`.
+A hand-registered probe from gluetun's netns proved the server was not
+throttling and the VPN exit was not banned:
+
+```
+NICK potatobooks  -> :srv 433 * potatobooks :Nickname is already in use.
+                     ERROR :Closing link: [...] [Registration timeout]
+NICK potatobooks2 -> :srv 001 potatobooks2 :Welcome to the irchighway IRC Network
+```
+
+**The nickname is a network-global resource, and this stack collides with
+itself.** The web UI opens a websocket IRC session on every page load, and
+the shared `/api/v1` session - the one the UI's own searches, the DAGs and
+the wanted poller use - is a second connection built from the SAME
+`server.config.UserName`. Whoever registers second gets `433`, upstream's
+`core.Join` never handles it, and the server closes the socket at its
+registration timeout. Callers saw only `read: EOF`.
+
+### The patch
+
+`core/irchighway.go` - the registration loop classifies the numerics it
+reads while waiting for `001`:
+
+- `432` (erroneous nickname) / `433` (already in use) / `436` (collision):
+  retry with the next candidate from `nickCandidates` - the configured
+  nick, then `_`, `__`, `___`, `____` (`maxNickAttempts = 5`) - and keep
+  waiting for `001`.
+- PING is still answered on the way; the 20s deadline and the
+  "join anyway" fallback are unchanged.
+
+`irc/irc.go` - new `Conn.ChangeNick(nick)` sends `NICK` and records the
+new name on the connection, so the UI's connection detail, the IRC log
+file name and `GET /stats` show the nickname the server actually gave us
+instead of the one we asked for. It is written while `Join` still owns the
+connection exclusively (no reader goroutine, not yet in the hub), so the
+`Username` readers never race.
+
+Tests (`core/irchighway_test.go`, loopback only): the candidate list, the
+numeric classification, and a real `Join` against a stub that answers
+`433` on the first `NICK` and `001` on the second, asserting the client
+ends up as `potatobooks_` and sends `JOIN #ebooks`.
+
+### Note for the next reader
+
+A `433` during registration does NOT mean the network is down, and the
+server's close is not a throttling ban. Naming the failure "unable to
+connect to IRC server" cost a session; the raw numeric is in the socket
+and only `--log`/a hand probe shows it.
+
+### Integration peers addressed by name, and a Prowlarr budget that fits
+
+Same session, two follow-on fixes found while testing the UI end to end:
+
+- `compose.media.yml` (potatostack repo): the `OPENBOOKS_*_URL` defaults were
+  bridge IPs, stale by then (prowlarr .7 -> .95, audiobookshelf .71 -> .76,
+  calibre-web .35 -> .70), so the unified search's Prowlarr leg answered
+  "connection refused". The v5.1.0 note claimed docker names do not resolve
+  from gluetun's netns; measured 2026-09-16 they do
+  (`docker exec gluetun busybox nslookup prowlarr` -> 172.22.0.95, and
+  `prowlarr:9696` / `audiobookshelf:80` / `calibre-web:8083` / `dagu:8080`
+  all answered HTTP 200 by name from that netns). Defaults are now service
+  names; `GET /api/v1/integrations?probe=1` reports `ok` for all three.
+- `server/integrations/config.go`, `server/integrations/http.go`,
+  `server/unified.go`: the peer budget was 30s in three places. Prowlarr's
+  own `/api/v1/search?type=book` round measured **29.3s** (1238 releases),
+  so the unified Prowlarr leg raced the deadline and reported `context
+  deadline exceeded` on roughly every other identical query. All three are
+  60s now; `POST /api/v1/search/unified` returns IRC 259 + Prowlarr 1198
+  hits in ~55s, and the UI's `+ Prowlarr` toggle renders 1457 rows.
 
 ## v5.4.0 (2026-09-03) - web UI line (the acquisition API gets a face)
 

@@ -37,4 +37,4 @@ var ErrDisabled = errors.New("integrations: client not configured (empty base UR
 // fans out to many indexers through the gluetun VPN can take tens of
 // seconds; the IRC search path is rate-limited separately, so this is the
 // budget for the peer round-trip only.
-const defaultTimeout = 30000 // ms, mirrored as a time.Duration in httputil.go
+const defaultTimeout = 60000 // ms, mirrored as a time.Duration in http.go

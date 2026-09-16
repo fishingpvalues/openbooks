@@ -28,7 +28,7 @@ import (
 // after the reader detects a dead connection (previously the first search
 // after a VPN bounce silently timed out and every later search hit the
 // dead conn); /api/v1/health reports ircConnected.
-var version = "5.4.0"
+var version = "5.4.1"
 
 // We only increment ircVersion when irc admins require a fix to be made.
 // They can block / permit certain version numbers. ircVersion is the current permitted

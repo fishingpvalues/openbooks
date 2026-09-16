@@ -190,6 +190,22 @@ func (i *Conn) JoinChannel(channel string) {
 	i.Write([]byte("JOIN #" + channel + "\r\n"))
 }
 
+// ChangeNick sends a NICK command and records the new name on the connection.
+//
+// PotatoStack v5.4.1: used by core.Join when the server answers 432/433/436
+// during registration (the configured nickname is already held by another
+// session). The field is written while Join still owns the connection
+// exclusively - before any reader goroutine or hub registration exists - so the
+// Username readers (UI connection detail, IRC log file name, GET /stats) never
+// race with it.
+func (i *Conn) ChangeNick(nick string) {
+	if !i.IsConnected() || nick == "" {
+		return
+	}
+	i.Write([]byte("NICK " + nick + "\r\n"))
+	i.Username = nick
+}
+
 // GetUsers sends a NAMES request to the channel
 func (i *Conn) GetUsers(channel string) {
 	if !i.IsConnected() {

@@ -54,7 +54,7 @@ func newTokenServer(t *testing.T) *server {
 	t.Helper()
 	s := newTestServer(t, true)
 	s.config.Token = "testtok"
-	s.config.Version = "5.4.0"
+	s.config.Version = "5.4.1"
 	s.config.Server = "127.0.0.1:1" // IRC connect fails fast
 	return s
 }
@@ -83,8 +83,8 @@ func TestHealthHandler(t *testing.T) {
 		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
 			t.Fatalf("persist=%v: decode: %v (body %s)", p, err, w.Body.String())
 		}
-		if out.Name != "openbooks" || out.Version != "5.4.0" || out.Persist != p {
-			t.Errorf("persist=%v: health = %+v, want {openbooks 5.1.2 %v}", p, out, p)
+		if out.Name != "openbooks" || out.Version != "5.4.1" || out.Persist != p {
+			t.Errorf("persist=%v: health = %+v, want {openbooks 5.4.1 %v}", p, out, p)
 		}
 		// No api session has been started in this server: ircConnected is
 		// false (the HTTP probe is alive but the IRC session has not been
@@ -118,8 +118,8 @@ func TestPublicRouteBoundaries(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&spec); err != nil {
 		t.Fatalf("openapi.json does not parse: %v", err)
 	}
-	if spec.Info.Version != "5.4.0" {
-		t.Errorf("openapi version = %q, want 5.1.2", spec.Info.Version)
+	if spec.Info.Version != "5.4.1" {
+		t.Errorf("openapi version = %q, want 5.4.1", spec.Info.Version)
 	}
 
 	// Every /api/v1 route requires the token.
@@ -601,7 +601,7 @@ func TestMetricsHandler(t *testing.T) {
 	// Per-server gauges have exact values on this fresh server.
 	for _, line := range []string{
 		"openbooks_up 1",
-		"openbooks_version{version=\"5.4.0\"} 1",
+		"openbooks_version{version=\"5.4.1\"} 1",
 		"openbooks_irc_connected 0",
 		"openbooks_downloads_completed 0",
 		"openbooks_callback_queue_size 0",

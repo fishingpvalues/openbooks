@@ -16,7 +16,7 @@ import (
 // search through the VPN (measured: a book search across all indexers can
 // run 30s+ and return multi-megabyte bodies); short enough that a dead peer
 // cannot hang the request.
-const httpTimeout = 30 * time.Second
+const httpTimeout = 60 * time.Second
 
 // maxRespBytes caps how much of a peer response body we read. Prowlarr
 // /api/v1/search returns every release across every indexer (multi-MB for a
