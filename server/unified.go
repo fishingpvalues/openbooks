@@ -18,6 +18,10 @@ package server
 //	prowlarr  - the Prowlarr book search across the configured indexers
 //	            (the existing peer client). A disabled client reports
 //	            "not configured"; an HTTP error reports the status.
+//	komga     - v5.5.0: the local library (Komga full-text search), so a
+//	            book already on the shelf shows up next to the download
+//	            sources. url is the Komga book page when
+//	            OPENBOOKS_KOMGA_PUBLIC_URL is set, else the API file path.
 //
 // Each source's results are normalized to unifiedResult{source, title,
 // author, format, size, url} - the fields a caller needs to act on a
@@ -96,7 +100,7 @@ type unifiedSearchRequest struct {
 }
 
 // unifiedKnownSources is the valid source set.
-var unifiedKnownSources = map[string]bool{"irc": true, "prowlarr": true}
+var unifiedKnownSources = map[string]bool{"irc": true, "prowlarr": true, "komga": true}
 
 // unifiedSearchHandler is POST /api/v1/search/unified.
 func (server *server) unifiedSearchHandler() http.HandlerFunc {
@@ -120,15 +124,22 @@ func (server *server) unifiedSearchHandler() http.HandlerFunc {
 				return
 			}
 		}
+		// Omitted sources = every source. komga joins the default only when
+		// it is configured, so an instance without a library keeps the
+		// v5.2 two-leg response.
 		wantIRC, wantProwlarr := true, true
+		wantKomga := server.integrations != nil && server.integrations.Komga != nil &&
+			server.integrations.Komga.Enabled()
 		if len(req.Sources) > 0 {
-			wantIRC, wantProwlarr = false, false
+			wantIRC, wantProwlarr, wantKomga = false, false, false
 			for _, s := range req.Sources {
 				switch s {
 				case "irc":
 					wantIRC = true
 				case "prowlarr":
 					wantProwlarr = true
+				case "komga":
+					wantKomga = true
 				}
 			}
 		}
@@ -144,6 +155,11 @@ func (server *server) unifiedSearchHandler() http.HandlerFunc {
 		}
 		if wantProwlarr {
 			books, statuses := server.unifiedProwlarrLeg(query)
+			out.Results = append(out.Results, books...)
+			out.Sources = append(out.Sources, statuses...)
+		}
+		if wantKomga {
+			books, statuses := server.unifiedKomgaLeg(query)
 			out.Results = append(out.Results, books...)
 			out.Sources = append(out.Sources, statuses...)
 		}
@@ -239,6 +255,40 @@ func (server *server) unifiedProwlarrLeg(query string) ([]unifiedResult, []unifi
 			Format: rel.Protocol,
 			Size:   humanSizeBytes(rel.Size),
 			URL:    firstNonEmpty(rel.MagnetURL, rel.DownloadURL),
+		})
+	}
+	st.Status = "ok"
+	st.Hits = len(results)
+	return results, []unifiedSourceStatus{st}
+}
+
+// unifiedKomgaLeg searches the local Komga library. Same status contract as
+// the Prowlarr leg: disabled = "not-configured", HTTP error = "error".
+func (server *server) unifiedKomgaLeg(query string) ([]unifiedResult, []unifiedSourceStatus) {
+	st := unifiedSourceStatus{Source: "komga"}
+	if server.integrations == nil || server.integrations.Komga == nil ||
+		!server.integrations.Komga.Enabled() {
+		st.Status = "not-configured"
+		st.Note = "Komga base URL not set"
+		return nil, []unifiedSourceStatus{st}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	books, _, err := server.integrations.Komga.SearchBooks(ctx, query, 50)
+	if err != nil {
+		st.Status = "error"
+		st.Note = err.Error()
+		return nil, []unifiedSourceStatus{st}
+	}
+	results := make([]unifiedResult, 0, len(books))
+	for _, b := range books {
+		results = append(results, unifiedResult{
+			Source: "komga",
+			Title:  b.Title,
+			Author: strings.Join(b.Authors, ", "),
+			Format: b.Format,
+			Size:   humanSizeBytes(b.SizeBytes),
+			URL:    firstNonEmpty(b.WebURL, b.DownloadURL),
 		})
 	}
 	st.Status = "ok"

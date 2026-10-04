@@ -1,3 +1,14 @@
+# [v5.5.0] - 2026-10-04
+
+## Changed
+- **Komga replaces Calibre-Web as the library peer.** PotatoStack retired Calibre-Web-Automated (it rewrote every imported book, so each seeding tracker book needed a second copy); Komga reads the seeding payloads in place. `server/integrations/calibreweb.go` is gone; `komga.go` talks to Komga's REST API (`GET /api/v1/books?search=`, `GET /api/v1/libraries`) with the `X-API-Key` header.
+- Env: `OPENBOOKS_KOMGA_URL`, `OPENBOOKS_KOMGA_API_KEY`, optional `OPENBOOKS_KOMGA_PUBLIC_URL` (browser-facing base for result links); unprefixed `KOMGA_*` fallbacks. `OPENBOOKS_CALIBREWEB_URL` is no longer read.
+- `GET /api/v1/integrations` reports a `komga` peer instead of `calibreweb`; its `apiProbe` lists the libraries, so a wrong key shows up as HTTP 401.
+- `GET /api/v1/health` reports `5.5.0`; `server/openapi.json` info.version is `5.5.0`.
+
+## Added
+- `POST /api/v1/search/unified` has a `komga` source: books already in the local library, normalized like the other legs (writer authors, format from the media profile, url = Komga book page). It joins the default source set only when Komga is configured.
+
 # [v5.4.6] - 2026-09-16
 
 ## Fixed

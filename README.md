@@ -14,7 +14,7 @@ patch line adds:
   extraction hardening, IRC TLS certificate pinning, IRC join race,
   loopback bind default)
 - the v5.1.0 integration layer (inbound Newznab /torznab book-indexer
-  endpoint, outbound clients for Prowlarr/Audiobookshelf/Calibre-Web/
+  endpoint, outbound clients for Prowlarr/Audiobookshelf/Komga/
   Readarr, download-completion webhook, /api/v1/integrations overview)
 - the v5.1.2 endpoints (GET /api/v1/downloads completions, GET
   /api/v1/metrics Prometheus text format, ircConnected on the health
@@ -52,7 +52,7 @@ patch line adds:
 - REST API under /api/v1 on a server-owned IRC session
 - Library listing, download and delete with traversal protection
 - Newznab /torznab book-indexer endpoint (Prowlarr/Readarr)
-- Outbound clients: Prowlarr, Audiobookshelf, Calibre-Web, Readarr
+- Outbound clients: Prowlarr, Audiobookshelf, Komga, Readarr
 - Download-completion webhook (static and per-request)
 - Runtime-mutable settings (download directory, persist flag)
 - Persistent Wanted watchlist with re-search poller (auto-fetch)
@@ -150,7 +150,7 @@ with none set):
 |----------|-------------|
 | OPENBOOKS_PROWLARR_URL, OPENBOOKS_PROWLARR_API_KEY | Prowlarr |
 | OPENBOOKS_AUDIOBOOKSHELF_URL, OPENBOOKS_AUDIOBOOKSHELF_API_KEY | Audiobookshelf; auth is Authorization: Bearer, not x-api-key |
-| OPENBOOKS_CALIBREWEB_URL | Calibre-Web; OPDS only, no key |
+| OPENBOOKS_KOMGA_URL, OPENBOOKS_KOMGA_API_KEY, OPENBOOKS_KOMGA_PUBLIC_URL | Komga; X-API-Key auth; the public URL (optional) is used for result links |
 | OPENBOOKS_READARR_URL, OPENBOOKS_READARR_API_KEY | Readarr |
 | OPENBOOKS_DOWNLOAD_CALLBACK | static completion webhook fired for every download; independent of the per-request callbackUrl |
 | OPENBOOKS_CALLBACK_ALLOWED_HOSTS | comma-separated hostnames allowed as callback targets (see the download-completion webhook below); empty by default |
@@ -172,7 +172,7 @@ requires the token (auth forms below).
 | PUT | /api/v1/settings | change downloadDir and/or persist without restart; 405 for other methods |
 | GET | /api/v1/downloads | JSON array of completions {name, completedAt}, oldest last; 404 when persist is off; the polling path for downloads without a callbackUrl |
 | GET | /api/v1/metrics | Prometheus text format (openbooks_up, version, irc_connected, searches, downloads, http status counts) |
-| GET | /api/v1/integrations | which peer integrations are configured (prowlarr/audiobookshelf/calibreweb/readarr + downloadCallback); ?probe=1 adds live reachability |
+| GET | /api/v1/integrations | which peer integrations are configured (prowlarr/audiobookshelf/komga/readarr + downloadCallback); ?probe=1 adds live reachability |
 | GET | /torznab | Newznab book-indexer endpoint (t=caps, t=search); auth via ?apikey=<token> |
 | GET | /openapi.json | embedded OpenAPI 3.x document (public) |
 
@@ -269,11 +269,11 @@ Outbound clients talk to up to four peers, each enabled by its env vars
 |------|----------|-------|
 | Prowlarr | OPENBOOKS_PROWLARR_URL, OPENBOOKS_PROWLARR_API_KEY | - |
 | Audiobookshelf | OPENBOOKS_AUDIOBOOKSHELF_URL, OPENBOOKS_AUDIOBOOKSHELF_API_KEY | auth is Authorization: Bearer, not x-api-key |
-| Calibre-Web | OPENBOOKS_CALIBREWEB_URL | OPDS only, no key |
+| Komga | OPENBOOKS_KOMGA_URL, OPENBOOKS_KOMGA_API_KEY, OPENBOOKS_KOMGA_PUBLIC_URL | X-API-Key; also the `komga` source of the unified search |
 | Readarr | OPENBOOKS_READARR_URL, OPENBOOKS_READARR_API_KEY | - |
 
 GET /api/v1/integrations reports which peers are configured
-(prowlarr/audiobookshelf/calibreweb/readarr plus downloadCallback).
+(prowlarr/audiobookshelf/komga/readarr plus downloadCallback).
 ?probe=1 adds live per-peer reachability (a transport ping; any HTTP
 status counts as reachable) and a functional apiProbe.
 

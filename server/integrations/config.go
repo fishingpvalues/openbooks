@@ -1,6 +1,6 @@
 // Package integrations is the PotatoStack v5 outbound API surface: typed
 // clients for the peer services openbooks talks to (Prowlarr, Audiobookshelf,
-// Calibre-Web, Readarr). Upstream openbooks has no such surface - it is an
+// Komga, Readarr). Upstream openbooks has no such surface - it is an
 // IRC/DCC ebook downloader whose only downstream is a shared staging dir.
 //
 // Every client is OPTIONAL. A client whose base URL is empty is disabled and
@@ -8,22 +8,17 @@
 // (single-user desktop mode) working exactly like upstream with no env set,
 // while `openbooks:local` on potatostack configures the peers it can reach.
 //
-// Addressing (measured 2026-09-01, see docs/openbooks/stack-state-2026-09-01.md
-// section 6): openbooks runs in the gluetun network namespace
-// (network_mode: service:gluetun), so it gets gluetun's /etc/resolv.conf
-// (9.9.9.9), NOT docker's embedded DNS. Docker service names (prowlarr,
-// audiobookshelf, calibre-web) do not resolve there, host.docker.internal is
-// resolvable but unroutable, and the LAN-IP path to CWA fails. The only
-// working durable addresses are the peers' BRIDGE IPs on 172.22.0.0/16:
+// Addressing: openbooks runs in the gluetun network namespace (network_mode:
+// service:gluetun). The 2026-09-01 note that docker service names do not
+// resolve there was wrong when measured on 2026-09-16 (and again 2026-10-04
+// for komga): gluetun's DNS answers container names, and bridge IPs are
+// dynamic. Address peers by service name, e.g.
 //
-//	prowlarr         172.22.0.7:9696
-//	audiobookshelf   172.22.0.71:80
-//	calibre-web      172.22.0.35:8083
+//	prowlarr         http://prowlarr:9696
+//	audiobookshelf   http://audiobookshelf:80
+//	komga            http://komga:25600
 //
-// Those bridge IPs are DYNAMIC (reallocation on container recreate - the
-// exact reason the prowlarr compose block refuses a pinned IP). They are
-// configurable here precisely so a recreation that moves an IP is a one-line
-// env change, not a code change. Set the OPENBOOKS_* base URLs accordingly.
+// Set the OPENBOOKS_* base URLs accordingly.
 package integrations
 
 import "errors"

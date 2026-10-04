@@ -23,8 +23,11 @@ type Config struct {
 	AudiobookshelfBaseURL string `json:"audiobookshelfBaseURL"`
 	AudiobookshelfAPIKey  string `json:"-"`
 
-	// Calibre-Web (CWA) base URL (OPDS root; no HTTP auth).
-	CalibreWebBaseURL string `json:"calibreWebBaseURL"`
+	// Komga base URL + X-API-Key (GET /api/v1/books?search=). KomgaPublicURL
+	// is the optional browser-facing address used for result links.
+	KomgaBaseURL   string `json:"komgaBaseURL"`
+	KomgaAPIKey    string `json:"-"`
+	KomgaPublicURL string `json:"komgaPublicURL,omitempty"`
 
 	// Readarr base URL + X-Api-Key. Empty on potatostack (Readarr is not
 	// deployed); set when Readarr lands.
@@ -51,7 +54,9 @@ type Config struct {
 //	OPENBOOKS_PROWLARR_API_KEY / PROWLARR_API_KEY      -> ProwlarrAPIKey
 //	OPENBOOKS_AUDIOBOOKSHELF_URL / AUDIOBOOKSHELF_URL  -> AudiobookshelfBaseURL
 //	OPENBOOKS_AUDIOBOOKSHELF_API_KEY / AUDIOBOOKSHELF_API_KEY -> AudiobookshelfAPIKey
-//	OPENBOOKS_CALIBREWEB_URL / CALIBREWEB_URL          -> CalibreWebBaseURL
+//	OPENBOOKS_KOMGA_URL / KOMGA_URL                    -> KomgaBaseURL
+//	OPENBOOKS_KOMGA_API_KEY / KOMGA_API_KEY            -> KomgaAPIKey
+//	OPENBOOKS_KOMGA_PUBLIC_URL / KOMGA_PUBLIC_URL      -> KomgaPublicURL
 //	OPENBOOKS_READARR_URL / READARR_URL                -> ReadarrBaseURL
 //	OPENBOOKS_READARR_API_KEY / READARR_API_KEY        -> ReadarrAPIKey
 //	OPENBOOKS_DOWNLOAD_CALLBACK / DOWNLOAD_CALLBACK    -> DownloadCallback
@@ -72,7 +77,9 @@ func FromEnv() Config {
 		ProwlarrAPIKey:        first("OPENBOOKS_PROWLARR_API_KEY", "PROWLARR_API_KEY"),
 		AudiobookshelfBaseURL: normalize(first("OPENBOOKS_AUDIOBOOKSHELF_URL", "AUDIOBOOKSHELF_URL")),
 		AudiobookshelfAPIKey:  first("OPENBOOKS_AUDIOBOOKSHELF_API_KEY", "AUDIOBOOKSHELF_API_KEY"),
-		CalibreWebBaseURL:     normalize(first("OPENBOOKS_CALIBREWEB_URL", "CALIBREWEB_URL")),
+		KomgaBaseURL:          normalize(first("OPENBOOKS_KOMGA_URL", "KOMGA_URL")),
+		KomgaAPIKey:           first("OPENBOOKS_KOMGA_API_KEY", "KOMGA_API_KEY"),
+		KomgaPublicURL:        normalize(first("OPENBOOKS_KOMGA_PUBLIC_URL", "KOMGA_PUBLIC_URL")),
 		ReadarrBaseURL:        normalize(first("OPENBOOKS_READARR_URL", "READARR_URL")),
 		ReadarrAPIKey:         first("OPENBOOKS_READARR_API_KEY", "READARR_API_KEY"),
 		DownloadCallback:      normalize(first("OPENBOOKS_DOWNLOAD_CALLBACK", "DOWNLOAD_CALLBACK")),
@@ -91,7 +98,7 @@ func normalize(s string) string {
 type Bundle struct {
 	Prowlarr       *ProwlarrClient
 	Audiobookshelf *AudiobookshelfClient
-	CalibreWeb     *CalibreWebClient
+	Komga          *KomgaClient
 	Readarr        *ReadarrClient
 	Config         Config
 }
@@ -103,7 +110,7 @@ func New(cfg Config) *Bundle {
 	return &Bundle{
 		Prowlarr:       NewProwlarr(cfg.ProwlarrBaseURL, cfg.ProwlarrAPIKey),
 		Audiobookshelf: NewAudiobookshelf(cfg.AudiobookshelfBaseURL, cfg.AudiobookshelfAPIKey),
-		CalibreWeb:     NewCalibreWeb(cfg.CalibreWebBaseURL),
+		Komga:          NewKomga(cfg.KomgaBaseURL, cfg.KomgaAPIKey, cfg.KomgaPublicURL),
 		Readarr:        NewReadarr(cfg.ReadarrBaseURL, cfg.ReadarrAPIKey),
 		Config:         cfg,
 	}

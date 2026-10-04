@@ -143,9 +143,8 @@ func statusOK(status int) bool { return status >= 200 && status < 300 }
 // does not exist"), while a transport error means the peer is actually
 // unreachable (DNS, connection refused, timeout - e.g. a moved bridge IP).
 // This is what /api/v1/integrations?probe=1 reports; it must NOT be an
-// authenticated API call, because a peer that answers with 401 (Calibre-Web
-// /opds/ does exactly that without a session cookie) would be misread as
-// down.
+// authenticated API call, because a peer that answers with 401 to an
+// unauthenticated GET would be misread as down.
 func (b *base) Ping(ctx context.Context) (int, error) {
 	if !b.enabled() {
 		return 0, ErrDisabled

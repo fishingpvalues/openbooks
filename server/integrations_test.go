@@ -246,7 +246,7 @@ func TestIntegrationsOverviewDisabled(t *testing.T) {
 	for _, n := range []string{
 		"OPENBOOKS_PROWLARR_URL", "PROWLARR_URL",
 		"OPENBOOKS_AUDIOBOOKSHELF_URL", "AUDIOBOOKSHELF_URL",
-		"OPENBOOKS_CALIBREWEB_URL", "CALIBREWEB_URL",
+		"OPENBOOKS_KOMGA_URL", "KOMGA_URL",
 		"OPENBOOKS_READARR_URL", "READARR_URL",
 		"OPENBOOKS_DOWNLOAD_CALLBACK", "DOWNLOAD_CALLBACK",
 	} {
@@ -265,7 +265,7 @@ func TestIntegrationsOverviewDisabled(t *testing.T) {
 	for _, want := range []string{
 		`"prowlarr"`,
 		`"audiobookshelf"`,
-		`"calibreweb"`,
+		`"komga"`,
 		`"readarr"`,
 		`"downloadCallback"`,
 		`"probes"`,
@@ -290,9 +290,8 @@ func TestIntegrationsOverviewConfigured(t *testing.T) {
 			io.WriteString(w, `[{"id":1,"name":"test","implementation":"NZB","protocols":"nzbtorrent","private":false,"supportsSearch":true}]`)
 		case strings.HasSuffix(r.URL.Path, "/api/libraries"):
 			io.WriteString(w, `{"libraries":[{"id":"1","name":"Books","type":"books","folders":[{"id":"f1","fullPath":"/x"}]}]}`)
-		case strings.HasPrefix(r.URL.Path, "/opds"):
-			w.Header().Set("Content-Type", "application/atom+xml")
-			io.WriteString(w, `<feed xmlns="http://www.w3.org/2005/Atom"><title>root</title></feed>`)
+		case strings.HasSuffix(r.URL.Path, "/api/v1/libraries"):
+			io.WriteString(w, `[{"id":"L1","name":"My Books","root":"/data"}]`)
 		case strings.HasSuffix(r.URL.Path, "/api/v1/book"):
 			io.WriteString(w, `[]`)
 		default:
@@ -302,12 +301,12 @@ func TestIntegrationsOverviewConfigured(t *testing.T) {
 	}))
 	defer peer.Close()
 
-	for _, n := range []string{"PROWLARR_URL", "AUDIOBOOKSHELF_URL", "CALIBREWEB_URL", "READARR_URL"} {
+	for _, n := range []string{"PROWLARR_URL", "AUDIOBOOKSHELF_URL", "KOMGA_URL", "READARR_URL"} {
 		t.Setenv(n, "")
 	}
 	t.Setenv("PROWLARR_URL", peer.URL)
 	t.Setenv("AUDIOBOOKSHELF_URL", peer.URL)
-	t.Setenv("CALIBREWEB_URL", peer.URL)
+	t.Setenv("KOMGA_URL", peer.URL)
 	t.Setenv("READARR_URL", peer.URL)
 	s := newTestServer(t, true)
 	router := integrationsRouter(s)
@@ -397,56 +396,64 @@ func TestAudiobookshelfClientContract(t *testing.T) {
 	}
 }
 
-// TestCalibreWebClientContract drives SearchOPDS against a canned OPDS feed
-// and checks the query-param search form + entry parsing.
-func TestCalibreWebClientContract(t *testing.T) {
-	var gotPath, gotTerm string
-	feed := `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>Search results</title>
-  <entry>
-    <title>The Hobbit</title>
-    <author><name>Tolkien, J.R.R.</name></author>
-    <id>book-1</id>
-    <summary>There is a hole in the ground.</summary>
-    <link rel="alternate" type="application/epub+zip" href="/books/1/download"/>
-  </entry>
-  <entry>
-    <title>Dune</title>
-    <author><name>Frank Herbert</name></author>
-    <id>book-2</id>
-    <summary>Let me die with my enemy.</summary>
-  </entry>
-</feed>`
+// komgaBooksPage is a trimmed live Komga 1.28 GET /api/v1/books response.
+const komgaBooksPage = `{"content":[
+ {"id":"0QYNQZT1J27WM","seriesId":"S1","seriesTitle":"cycle de Dune","libraryId":"L1",
+  "name":"Dune 1","url":"/tracker-books/Dune/Dune 1.epub","size":"731.2 KiB","sizeBytes":748713,
+  "media":{"status":"READY","mediaType":"application/epub+zip","mediaProfile":"EPUB"},
+  "metadata":{"title":"Dune","authors":[{"name":"Frank Herbert","role":"writer"},{"name":"Some Artist","role":"cover"}]}},
+ {"id":"B2","seriesId":"S2","seriesTitle":"Misc","libraryId":"L1",
+  "name":"untitled-file","url":"/data/x/untitled-file.pdf","sizeBytes":1024,
+  "media":{"mediaType":"application/pdf","mediaProfile":"PDF"},
+  "metadata":{"title":"","authors":[]}}
+],"totalElements":2,"totalPages":1,"size":20,"number":0}`
+
+// TestKomgaClientContract pins the live-verified Komga 1.28 contract:
+// X-API-Key header, GET /api/v1/books?search=&size=, Spring page decoding,
+// writer-only authors, file-name title fallback, web + download links.
+func TestKomgaClientContract(t *testing.T) {
+	var gotKey, gotPath, gotSearch, gotSize string
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-API-Key")
 		gotPath = r.URL.Path
-		gotTerm = r.URL.Query().Get("searchTerm")
-		w.Header().Set("Content-Type", "application/atom+xml")
-		io.WriteString(w, feed)
+		gotSearch = r.URL.Query().Get("search")
+		gotSize = r.URL.Query().Get("size")
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, komgaBooksPage)
 	}))
 	defer peer.Close()
 
-	c := integrations.NewCalibreWeb(peer.URL)
-	feedOut, err := c.SearchOPDS(context.Background(), "hobbit")
+	c := integrations.NewKomga(peer.URL, "komga-key", "https://komga.example:25600/")
+	books, total, err := c.SearchBooks(context.Background(), "dune", 5)
 	if err != nil {
-		t.Fatalf("SearchOPDS: %v", err)
+		t.Fatalf("SearchBooks: %v", err)
 	}
-	if len(feedOut.Entries) != 2 {
-		t.Fatalf("parsed %d entries, want 2 (%+v)", len(feedOut.Entries), feedOut)
+	if gotKey != "komga-key" || gotPath != "/api/v1/books" || gotSearch != "dune" || gotSize != "5" {
+		t.Errorf("request = key %q path %q search %q size %q", gotKey, gotPath, gotSearch, gotSize)
 	}
-	if feedOut.Entries[0].Title != "The Hobbit" || feedOut.Entries[0].Author != "Tolkien, J.R.R." {
-		t.Errorf("first entry = %+v, want The Hobbit / Tolkien", feedOut.Entries[0])
+	if total != 2 || len(books) != 2 {
+		t.Fatalf("total %d, books %d, want 2/2", total, len(books))
 	}
-	if gotTerm != "hobbit" {
-		t.Errorf("searchTerm = %q, want %q", gotTerm, "hobbit")
+	b := books[0]
+	if b.Title != "Dune" || len(b.Authors) != 1 || b.Authors[0] != "Frank Herbert" {
+		t.Errorf("first book = %+v, want Dune / [Frank Herbert]", b)
 	}
-	if gotPath != "/opds/" {
-		t.Errorf("search path = %q, want /opds/", gotPath)
+	if b.Format != "epub" || b.SizeBytes != 748713 || b.FileName != "Dune 1.epub" {
+		t.Errorf("first book format/size/file = %q/%d/%q", b.Format, b.SizeBytes, b.FileName)
+	}
+	if b.WebURL != "https://komga.example:25600/book/0QYNQZT1J27WM" {
+		t.Errorf("webUrl = %q", b.WebURL)
+	}
+	if b.DownloadURL != "/api/v1/books/0QYNQZT1J27WM/file" {
+		t.Errorf("downloadUrl = %q", b.DownloadURL)
+	}
+	if books[1].Title != "untitled-file" {
+		t.Errorf("empty metadata title should fall back to the file name, got %q", books[1].Title)
 	}
 
-	// RootFeed hits the OPDS root.
-	if _, err := c.RootFeed(context.Background()); err != nil {
-		t.Errorf("RootFeed: %v", err)
+	// Disabled client: ErrDisabled, no request.
+	if _, _, err := integrations.NewKomga("", "", "").SearchBooks(context.Background(), "x", 1); err != integrations.ErrDisabled {
+		t.Errorf("disabled SearchBooks err = %v, want ErrDisabled", err)
 	}
 }
 
@@ -627,8 +634,8 @@ func TestOpenAPISpecDrift(t *testing.T) {
 	if err := json.Unmarshal(openapiSpec, &spec); err != nil {
 		t.Fatalf("embedded openapi.json does not parse: %v", err)
 	}
-	if spec.Info.Version != "5.4.6" {
-		t.Errorf("openapi version = %q, want 5.4.6", spec.Info.Version)
+	if spec.Info.Version != "5.5.0" {
+		t.Errorf("openapi version = %q, want 5.5.0", spec.Info.Version)
 	}
 	for _, p := range []string{
 		"/torznab",

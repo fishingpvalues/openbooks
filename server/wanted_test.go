@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evan-buss/openbooks/server/integrations"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -376,6 +378,48 @@ func TestUnifiedSearch(t *testing.T) {
 	}
 	if out.Took == "" {
 		t.Error("took is empty, want a duration")
+	}
+}
+
+// TestUnifiedSearchKomgaLeg: the v5.5.0 komga leg normalizes library hits
+// (writer authors joined, epub format, web link) and joins the default
+// source set only when Komga is configured.
+func TestUnifiedSearchKomgaLeg(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"content":[{"id":"K1","libraryId":"L1","name":"f","url":"/data/f.epub","sizeBytes":2048,
+			"media":{"mediaType":"application/epub+zip","mediaProfile":"EPUB"},
+			"metadata":{"title":"Dune","authors":[{"name":"Frank Herbert","role":"writer"}]}}],"totalElements":1}`)
+	}))
+	defer peer.Close()
+
+	s := newTokenServer(t)
+	s.integrations = integrations.New(integrations.Config{
+		KomgaBaseURL: peer.URL, KomgaAPIKey: "k", KomgaPublicURL: "https://komga.example",
+	})
+	router := v52Router(s)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/search/unified",
+		bytes.NewBufferString(`{"query":"dune","sources":["komga"]}`))
+	req.Header.Set("Authorization", "Bearer "+s.config.Token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unified komga -> %d (body %s)", w.Code, w.Body.String())
+	}
+	var out unifiedResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Sources) != 1 || out.Sources[0].Source != "komga" || out.Sources[0].Status != "ok" {
+		t.Fatalf("sources = %+v, want one ok komga leg", out.Sources)
+	}
+	if len(out.Results) != 1 {
+		t.Fatalf("results = %+v, want 1", out.Results)
+	}
+	r := out.Results[0]
+	if r.Source != "komga" || r.Title != "Dune" || r.Author != "Frank Herbert" ||
+		r.Format != "epub" || r.URL != "https://komga.example/book/K1" {
+		t.Errorf("result = %+v", r)
 	}
 }
 

@@ -1,10 +1,21 @@
 # openbooks:local - PotatoStack patch notes
 
 This directory is the [evan-buss/openbooks](https://github.com/evan-buss/openbooks)
-source at tag **v4.5.0** plus the **PotatoStack v5.4.6 patch line**, built as
+source at tag **v4.5.0** plus the **PotatoStack v5.5.0 patch line**, built as
 `openbooks:local` (same pattern as `bookdl:local`). Full changelog and API
 docs: `README.md`; machine-readable API spec: `server/openapi.json`, served
 at `GET /openapi.json`.
+
+## v5.5.0 (2026-10-04) - Komga replaces Calibre-Web
+
+PotatoStack retired Calibre-Web-Automated: it rewrote every book it imported, so
+each seeding tracker book needed a second copy. Komga only reads, so it serves the
+seeding payloads in place. The CWA peer client (`calibreweb.go`, OPDS only) is
+replaced by `komga.go` (REST, `X-API-Key`): `GET /api/v1/integrations` reports
+`komga`, and the unified search gains a `komga` leg that shows books already on
+the shelf next to the IRC and Prowlarr hits. Env: `OPENBOOKS_KOMGA_URL`
+(`http://komga:25600` - the docker name resolves from the gluetun netns, measured),
+`OPENBOOKS_KOMGA_API_KEY`, optional `OPENBOOKS_KOMGA_PUBLIC_URL` for result links.
 
 ## v5.4.6 (2026-09-16) - the audiobook rows parse too
 
@@ -516,8 +527,9 @@ behind one `Bundle` built in `server.New()`:
 - **Audiobookshelf** (`audiobookshelf.go`): `ListLibraries`,
   `ScanLibrary`, `SearchLibraryItems`. Auth is `Authorization: Bearer ***
   (NOT `x-api-key` - that returns 401; measured 2026-09-01).
-- **Calibre-Web** (`calibreweb.go`): `RootFeed`, `SearchOPDS`. CWA has no
-  REST API - OPDS atom feeds only (`/opds/`, `?searchTerm=`).
+- **Komga** (`komga.go`): `ListLibraries`, `SearchBooks`
+  (`GET /api/v1/books?search=&size=`, Spring page). Auth `X-API-Key`.
+  Replaced the Calibre-Web OPDS client in v5.5.0.
 - **Readarr** (`readarr.go`): `Lookup` (`GET /api/v1/book/lookup?title=`),
   `HasBook` (`GET /api/v1/book`). Dormant on potatostack (Readarr not
   deployed; `OPENBOOKS_READARR_URL` empty by default).

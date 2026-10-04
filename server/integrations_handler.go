@@ -5,7 +5,7 @@ package server
 //
 // GET <basepath>api/v1/integrations reports which peer integrations are
 // configured and (with ?probe=1) whether they answer. It is the operator's
-// window into "is this instance wired to Prowlarr/ABS/CWA/Readarr?" and it
+// window into "is this instance wired to Prowlarr/ABS/Komga/Readarr?" and it
 // turns the bridge-IP fragility (docs/openbooks/stack-state-2026-09-01.md
 // GAPS #2) into something observable: after a peer container recreate that
 // moves a bridge IP, the probe for that peer reports unreachable until the
@@ -33,7 +33,7 @@ func (server *server) integrationsOverviewHandler() http.HandlerFunc {
 		ov := map[string]interface{}{
 			"prowlarr":       peer("prowlarr", cfg.ProwlarrBaseURL, server.integrations.Prowlarr.Enabled()),
 			"audiobookshelf": peer("audiobookshelf", cfg.AudiobookshelfBaseURL, server.integrations.Audiobookshelf.Enabled()),
-			"calibreweb":     peer("calibreweb", cfg.CalibreWebBaseURL, server.integrations.CalibreWeb.Enabled()),
+			"komga":          peer("komga", cfg.KomgaBaseURL, server.integrations.Komga.Enabled()),
 			"readarr":        peer("readarr", cfg.ReadarrBaseURL, server.integrations.Readarr.Enabled()),
 			"downloadCallback": map[string]interface{}{
 				"configured": cfg.DownloadCallback != "",
@@ -42,10 +42,9 @@ func (server *server) integrationsOverviewHandler() http.HandlerFunc {
 
 		// Live probes only on opt-in: probing every peer on every overview
 		// call would hammer the services. Two signals per peer: `reachable`
-		// is a transport-level Ping (ANY HTTP status counts - Calibre-Web
-		// /opds/ answers 401 without a session and would otherwise read as
-		// down; a transport error is the real "unreachable", e.g. a moved
-		// bridge IP) and `apiProbe` is a functional call against the peer's
+		// is a transport-level Ping (ANY HTTP status counts - a peer that
+		// answers 401 to an unauthenticated GET is up; a transport error is
+		// the real "unreachable", e.g. a stopped container) and `apiProbe` is a functional call against the peer's
 		// real API (ok / HTTP status), which says whether the configured
 		// key/path still works. The probes are cheap GETs.
 		if r.URL.Query().Get("probe") == "1" {
@@ -62,10 +61,10 @@ func (server *server) integrationsOverviewHandler() http.HandlerFunc {
 					_, err := server.integrations.Audiobookshelf.ListLibraries(r.Context())
 					return err == nil, errToMsg(err)
 				}),
-				"calibreweb": peerProbe(func() (int, error) {
-					return server.integrations.CalibreWeb.Ping(r.Context())
+				"komga": peerProbe(func() (int, error) {
+					return server.integrations.Komga.Ping(r.Context())
 				}, func() (bool, string) {
-					_, err := server.integrations.CalibreWeb.RootFeed(r.Context())
+					_, err := server.integrations.Komga.ListLibraries(r.Context())
 					return err == nil, errToMsg(err)
 				}),
 				"readarr": peerProbe(func() (int, error) {

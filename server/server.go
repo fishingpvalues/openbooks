@@ -54,7 +54,7 @@ type server struct {
 	settings *Settings
 
 	// PotatoStack v5 integrations: the outbound peer clients (Prowlarr,
-	// Audiobookshelf, Calibre-Web, Readarr) plus the download-completion
+	// Audiobookshelf, Komga, Readarr) plus the download-completion
 	// webhook config. Built from the environment at start; every client is
 	// optional (empty base URL = disabled). See server/integrations/.
 	integrations *integrations.Bundle
