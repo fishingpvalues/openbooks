@@ -48,6 +48,11 @@ var pinnedIRCCertFingerprints = map[string][]string{
 		"f50231e6e4594259d5522a92cc79cee4173a5bb56b32352fe9ee064fc5013d25",
 		"7715fe7f757ce3e035ac127c32bd7256ac352a246a987b284ece3a69c7717cb4",
 		"527c93465e26c075ce37070ba558ae52ea7fc82105d277af0655e4c467d6367f",
+		// IPv6 backends (the 2026-09-01 probe ran over IPv4 only; the VPN
+		// netns has IPv6 since then). Captured 2026-10-09 from host and VPN:
+		// smeagol.ca.na [2607:5300:60:3827::1], New York [2604:a880:400:d0::e6:8001].
+		"cbb12bd08befb4a36cde5a2b6318abcb7d99a2099f0c42528bcbd6028a5f605b",
+		"14eb7414537bb50facb4f10558cb4b007cfa21ab3b9053867f926330ab559cf8",
 	},
 }
 
